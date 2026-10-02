@@ -193,7 +193,7 @@ jobs:
           cat checksums-windows.txt
 
       - name: Create/Update GitHub Release (clobber same-name assets only)
-        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/')  # 没有 tag 就没有 Release：dispatch 只验构建，绝不拿分支名去建发行物
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -55,8 +55,11 @@ OS → Makefile 一律跟作者的 Makefile 走，我们不加编译入口：
 触发方式
 ------
 
-- 推送形如 `v*.*.*` 的 tag（例如 `v1.6.8-dev`）→ 五个 build workflow 全矩阵跑；
-- Actions 页面 `workflow_dispatch` 手动跑（此时包名版本取自 `version` + `g<short-sha>`）；
+- 推送形如 `v*.*.*` 的 tag（例如 `v1.6.8-dev`）→ 五个 build workflow 全矩阵跑，并对外发行；
+- Actions 页面 `workflow_dispatch` 手动跑：**只验构建，不发行**。没有 tag 就没有 Release，
+  各 workflow 的 Release/rsync 步骤都带 `startsWith(github.ref, 'refs/tags/')` 条件跳过
+  （包名版本取自 `version` + `g<short-sha>`，只落 workflow 产物）。要窄验证就单独 dispatch
+  那一个 workflow，不必动 tag；
 - `verify.yml` 跟着 `main` 的 push 跑工具守护与各通道单测。
 
 平台矩阵
