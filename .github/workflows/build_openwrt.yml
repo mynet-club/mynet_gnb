@@ -23,7 +23,7 @@ concurrency:
 jobs:
   plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     outputs:
       channels: ${{ steps.pick.outputs.channels }}
     steps:
@@ -64,7 +64,7 @@ jobs:
     needs: plan
     name: OpenWrt ${{ matrix.arch }} (${{ matrix.channel }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -104,7 +104,7 @@ jobs:
       - name: Install build dependencies
         # 三个 -o + `</dev/null` + timeout 都为了让 apt 卡死变成「几分钟内失败且留日志」，
         # 而不是占着 runner 到 job 默认的 6 小时；成因见 build_linux.yml 的注释。
-        timeout-minutes: 10
+        timeout-minutes: 8
         run: |
           APT_OPTS="-o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 -o Acquire::http::Timeout=20"
           sudo apt-get $APT_OPTS update -qq </dev/null
@@ -274,7 +274,7 @@ jobs:
       contents: write
       actions: read
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 

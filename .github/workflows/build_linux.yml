@@ -24,7 +24,7 @@ concurrency:
 jobs:
   plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     outputs:
       channels: ${{ steps.pick.outputs.channels }}
     steps:
@@ -68,7 +68,7 @@ jobs:
     needs: plan
     name: Linux ${{ matrix.arch }} (${{ matrix.channel }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     # 兜底：卡在任何没预料的地方也在分钟内失败并留日志，而不是 job 默认的 6 小时
     strategy:
       fail-fast: false
@@ -80,7 +80,10 @@ jobs:
         arch:
           - amd64
           - arm64
-          - armv7-softfp
+          # armv7-softfp 已摘：软浮点这条腿要 musl.cc 的 musleabi（runner 取不到）或
+          # Debian 的 armel 交叉包（为它给整条轴共用的 apt 步多下几十 MB 不值），
+          # 而无 VFP 的 armv7 设备是极小概率。恢复要改的三处写在 Setup cross compiler
+          # 前面那段注释里。
           - armv7-hardfp
           - mips
           - mipsel
@@ -90,7 +93,7 @@ jobs:
           # （gnb_conf_file.h:24 声明 gnb_uint64_t，gnb_conf_file.c:841 定义 uint64_t，
           # 而 gnb_def.h:22 把前者定为 unsigned long long）。那不是 riscv 专属：
           # amd64/arm64/mips64/mips64el 与 FreeBSD amd64 撞的是同一行同一句。
-          # 现在这行修复在发行基线里（local_source_commit 98f8b4e），轴恢复完整 9 条腿。
+          # 现在这行修复在发行基线里（local_source_commit 98f8b4e），轴恢复完整（riscv64 在内）。
           # 摘单条架构不是修法：那是把问题藏起来，而且当时只挡住了这一类里的一例。
           - riscv64
 
@@ -123,17 +126,19 @@ jobs:
       - name: Install dependencies
         # 超时是留着的卫生措施，不是对某次失败的归因：apt 在这类 runner 上有两种「无限等」
         # （dpkg 锁 + 镜像连接 stalled），默认都不超时，三个 -o 把等待换成有上限的失败；
-        # `</dev/null` 保证任何提示直接失败而不是等输入。10 分钟的档位对照实测：同一份
-        # 包清单（含四个 mips 交叉包）在别的 runner 上 1~2 分钟装完（那几条腿整 job
-        # 才 2~6 分钟），这里留了 5~10 倍余量。
+        # `</dev/null` 保证任何提示直接失败而不是等输入。8 分钟的档位对照实测：同一份
+        # 包清单（含四个 mips 交叉包）在别的 runner 上 1~2 分钟装完（那些腿整 job
+        # 才 2~6 分钟），这里留了 4~8 倍余量；Actions 按分钟计费，慢runner 上多等
+        # 一小时也不如几分钟内失败重跑一次。
         # 更正两次记录，都栽在同一个陷阱上（GH 在 job 结束前不落日志，
         # 查 /jobs/{id}/logs 回 BlobNotFound，步骤栏还会停在旧步骤 —— 别拿没落盘的
         # 步骤状态当证据）：10-02 那轮 armv7-softfp 我先判成「卡在 apt 的 dpkg 锁上」，
-        # 又改口成「卡在 musl.cc 下载上」。完整日志的实测是：apt 那步确实花了
-        # 59 分钟（15:06:39→16:05:42，逐条 Get: 之间 100~260 秒的空档，azure 镜像在
-        # 滴流），但**跑成功了**；后面 Setup musl 那步只花 30 秒就失败退出，
-        # 整小时的嫌疑与出包失败的原因不是同一件事。真正卡出包的是下一步的 musl.cc。
-        timeout-minutes: 10
+        # 又改口成「卡在 musl.cc 下载上」。完整日志按时间戳算差的实测是：apt 那步确实
+        # 花了 59 分钟（15:06:39→16:05:42，逐条 Get: 之间 100~260 秒空档，azure 镜像在
+        # 滴流），但**它跑成功了**；真正让那条腿出不了包的是当时的 Setup musl 步骤
+        # ——30 秒内取工具链失败（该步骤连同 musl.cc 依赖已在 4e1dbc3 之后整体移除，
+        # 理由见下面 Setup cross compiler 前的注释）。
+        timeout-minutes: 8
         run: |
           APT_OPTS="-o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 -o Acquire::http::Timeout=20"
           sudo apt-get $APT_OPTS update </dev/null
@@ -142,301 +147,49 @@ jobs:
           sudo apt-get $APT_OPTS install -y gcc-mips-linux-gnu gcc-mipsel-linux-gnu gcc-mips64-linux-gnuabi64 gcc-mips64el-linux-gnuabi64 || true
           sudo apt-get $APT_OPTS install -y gcc-riscv64-linux-gnu || true
 
-      # 只有 armv7-* 从 musl.cc 取工具链；其余 arch 用 Debian 的 glibc 交叉包
-      # （沿用改造前的 libc 口径，本次改造不动它）。case 里的 mipsel/riscv64/arm64
-      # 分支留着，把上面的门控放宽就能启用。
-      - name: Setup musl / special toolchain
-        if: matrix.arch == 'armv7-softfp' || matrix.arch == 'armv7-hardfp'
-        timeout-minutes: 10
-        run: |
-          set -e
-          cd /tmp
-          musl_available=false
-
-          # 从 musl.cc 取一份交叉工具链：墙上时钟有上限，失败必须把原因留下。
-          # 上一版这里是 `wget -q -T 30 -t 3 || WARN`：-q 把服务端返回码、DNS/连接错误
-          # 全吞了，于是 10-02 那轮两条 armv7 腿都在 30 秒内失败、日志里只剩一句
-          # 「下载失败」，没有任何人看得出是为什么（本地 curl -sIL 那个 URL 是
-          # 200 + Content-Length 102611361，说明文件在、问题在 runner 到 musl.cc 这条路）。
-          # -T/--timeout 只管单次读空闲，滴流不算空闲，所以再加 timeout 挂墙上上限；
-          # 解包前先 gzip -t：半截的 tgz 解包只会报个跟网络无关的错，白绕一圈。
-          fetch_musl_cross() {   # $1=工具链名 → 0=已解包好
-              _t="$1"
-              [ -d "$_t" ] && return 0
-              timeout --kill-after=30 300 \
-                wget -nv --timeout=20 --tries=3 --server-response \
-                "https://musl.cc/$_t.tgz" -O "$_t.tgz"
-              _rc=$?
-              if [ "$_rc" -ne 0 ]; then
-                  # wget 返回码：1=服务端拒绝 3=URL 非法 4=网络 5=本地写错误 8=服务端返回码
-                  # 124 不是 wget 的码，是 timeout 到点掐的（连接活着但吞吐不够）
-                  echo "FAIL: 取 musl.cc/$_t.tgz 失败，退出码 $_rc" >&2
-                  echo "      已落盘 $(wc -c < "$_t.tgz" 2>/dev/null || echo 0) 字节" >&2
-                  rm -f "$_t.tgz"
-                  return 1
-              fi
-              if ! gzip -t "$_t.tgz"; then
-                  echo "FAIL: $_t.tgz 下载不完整（gzip -t 不通过，$(wc -c < "$_t.tgz") 字节）" >&2
-                  rm -f "$_t.tgz"
-                  return 1
-              fi
-              tar -xzf "$_t.tgz" || { echo "FAIL: $_t.tgz 解包失败" >&2; return 1; }
-              [ -d "$_t/bin" ] || { echo "FAIL: 解包后没有 $_t/bin 目录" >&2; return 1; }
-              echo "OK: $_t 已就位（$(du -sh "$_t" 2>/dev/null | cut -f1)）"
-              return 0
-          }
-
-          case "${{ matrix.arch }}" in
-            mipsel)
-              if [ ! -d mipsel-linux-musl-cross ]; then
-                if wget -q -T 30 -t 3 https://musl.cc/mipsel-linux-musl-cross.tgz -O mipsel-linux-musl-cross.tgz; then
-                  tar -xzf mipsel-linux-musl-cross.tgz && musl_available=true
-                else
-                  echo "WARN: mipsel musl download failed, will use glibc cross-compiler"
-                fi
-              else
-                musl_available=true
-              fi
-              if [ "$musl_available" = "true" ] && [ -d mipsel-linux-musl-cross/bin ]; then
-                echo "/tmp/mipsel-linux-musl-cross/bin" >> $GITHUB_PATH
-                echo "MUSL_AVAILABLE=true" >> $GITHUB_ENV
-              fi
-              ;;
-            mipsel-muslsf)
-              musl_available=false
-              if [ ! -d mipsel-linux-muslsf-cross ]; then
-                echo "Trying to use local mipsel-muslsf toolchain from repository..."
-                # 本地工具链不入库（曾 102MB 导致 push 失败）；CI 优先 wget musl.cc
-                if [ -f "$GITHUB_WORKSPACE/.github/toolchains/mipsel-linux-muslsf-cross.tgz" ]; then
-                  echo "Found local toolchain, extracting..."
-                  cp "$GITHUB_WORKSPACE/.github/toolchains/mipsel-linux-muslsf-cross.tgz" .
-                  if tar -xzf mipsel-linux-muslsf-cross.tgz; then
-                    musl_available=true
-                    echo "Local toolchain extracted successfully"
-                  else
-                    echo "ERROR: Failed to extract local toolchain"
-                  fi
-                else
-                  echo "Local toolchain not found, downloading from musl.cc..."
-                  # 尝试3次下载
-                  for attempt in 1 2 3; do
-                    echo "Download attempt $attempt/3..."
-                    if wget --timeout=30 --tries=2 -q https://musl.cc/mipsel-linux-muslsf-cross.tgz -O mipsel-linux-muslsf-cross.tgz; then
-                      echo "Download successful, extracting..."
-                      if tar -xzf mipsel-linux-muslsf-cross.tgz; then
-                        musl_available=true
-                        echo "Downloaded toolchain extracted successfully"
-                        break
-                      else
-                        echo "ERROR: Failed to extract downloaded toolchain"
-                        rm -f mipsel-linux-muslsf-cross.tgz
-                      fi
-                    else
-                      echo "Download attempt $attempt failed"
-                      rm -f mipsel-linux-muslsf-cross.tgz
-                      if [ $attempt -lt 3 ]; then
-                        echo "Retrying in 5 seconds..."
-                        sleep 5
-                      fi
-                    fi
-                  done
-                fi
-
-                if [ "$musl_available" = "false" ]; then
-                  echo "ERROR: Both local and remote toolchain setup failed"
-                fi
-              else
-                musl_available=true
-                echo "mipsel-linux-muslsf-cross toolchain already exists"
-              fi
-              if [ "$musl_available" = "true" ] && [ -d mipsel-linux-muslsf-cross/bin ]; then
-                echo "/tmp/mipsel-linux-muslsf-cross/bin" >> $GITHUB_PATH
-                echo "MUSL_AVAILABLE=true" >> $GITHUB_ENV
-                echo "Added mipsel-linux-muslsf-cross/bin to PATH"
-                ls -la mipsel-linux-muslsf-cross/bin/ | head -5
-              else
-                echo "ERROR: mipsel-linux-muslsf-cross toolchain setup failed"
-                echo "musl_available=$musl_available"
-                echo "Directory check: $(ls -ld mipsel-linux-muslsf-cross 2>/dev/null || echo 'Not found')"
-                exit 1
-              fi
-              ;;
-            riscv64)
-              if [ ! -d riscv64-linux-musl-cross ]; then
-                if wget -q -T 30 -t 3 https://musl.cc/riscv64-linux-musl-cross.tgz -O riscv64-linux-musl-cross.tgz; then
-                  tar -xzf riscv64-linux-musl-cross.tgz && musl_available=true
-                else
-                  echo "WARN: riscv64 musl download failed, will use glibc cross-compiler"
-                fi
-              else
-                musl_available=true
-              fi
-              if [ "$musl_available" = "true" ] && [ -d riscv64-linux-musl-cross/bin ]; then
-                echo "/tmp/riscv64-linux-musl-cross/bin" >> $GITHUB_PATH
-                echo "MUSL_AVAILABLE=true" >> $GITHUB_ENV
-              fi
-              ;;
-            armv7-softfp|armv7-hardfp)
-              # 浮点 ABI 决定要哪份工具链：softfp 用 musl 的 musleabi（软浮点），
-              # hardfp 用 musleabihf。上一版两条腿共用 eabihf 那一份，musl.cc 下载一抖
-              # 就退到 Debian 的 arm-linux-gnueabihf-gcc，再叠 -mfloat-abi=soft 去要
-              # glibc 的软浮点 stubs：
-              #   /usr/arm-linux-gnueabihf/include/gnu/stubs.h:7: gnu/stubs-soft.h: No such file
-              # Debian 的 arm 交叉包只有 hard 一套，这个组合不存在「换个编译器就能成」的一面。
-              if [ '${{ matrix.arch }}' = armv7-softfp ]; then
-                t=arm-linux-musleabi-cross
-              else
-                t=arm-linux-musleabihf-cross
-              fi
-              if [ -d "$t" ]; then
-                musl_available=true
-              elif fetch_musl_cross "$t"; then
-                musl_available=true
-              else
-                echo "WARN: $t 没取到，原因见上面的 FAIL（softfp 会硬失败，hardfp 会退到 Debian glibc 交叉包）" >&2
-              fi
-              if [ "$musl_available" = "true" ] && [ -d "$t/bin" ]; then
-                echo "/tmp/$t/bin" >> $GITHUB_PATH
-                echo "MUSL_AVAILABLE=true" >> $GITHUB_ENV
-              fi
-              ;;
-            amd64)
-              echo "No extra musl toolchain needed for native amd64"
-              ;;
-            arm64)
-              # 为 arm64 添加 musl 工具链支持以确保静态链接
-              if [ ! -d aarch64-linux-musl-cross ]; then
-                if wget -q -T 30 -t 3 https://musl.cc/aarch64-linux-musl-cross.tgz -O aarch64-linux-musl-cross.tgz; then
-                  tar -xzf aarch64-linux-musl-cross.tgz && musl_available=true
-                  echo "aarch64-linux-musl-cross toolchain downloaded and extracted"
-                else
-                  echo "WARN: aarch64-linux-musl musl download failed, will use glibc cross-compiler"
-                fi
-              else
-                musl_available=true
-              fi
-              if [ "$musl_available" = "true" ] && [ -d aarch64-linux-musl-cross/bin ]; then
-                echo "/tmp/aarch64-linux-musl-cross/bin" >> $GITHUB_PATH
-                echo "MUSL_AVAILABLE=true" >> $GITHUB_ENV
-                echo "Added aarch64-linux-musl-cross/bin to PATH"
-              fi
-              ;;
-            *) echo "No extra musl toolchain for ${{ matrix.arch }}";;
-          esac
+      # Linux 轴一律用 Debian/Ubuntu 的 glibc 交叉包，**不再从 musl.cc 取工具链**。
+      # 取不到不是抖动：三次独立取证（tag 全矩阵那轮 + 两次单 workflow dispatch、
+      # 不同 runner、相隔 6 小时）签名一致 —— IPv4 连接 20 秒超时、IPv6 Network is
+      # unreachable、0 字节落盘、wget 退出码 4；同一个 URL 从本地 curl -sIL 是
+      # 200 + Content-Length 102611361。也就是 GitHub 托管 runner → musl.cc 这条路不通。
+      # 留着它，每条 armv7 腿都得先白烧一次连接超时，而 Actions 按分钟计费。
+      #
+      # 要恢复软浮点那条腿（armv7-softfp，本轮已摘）就三处一起改，别只加矩阵轴：
+      #   1) apt 步加 gcc-arm-linux-gnueabi + libc6-dev-armel-cross（armel=软浮点 sysroot；
+      #      实测 noble universe 里有：gcc-arm-linux-gnueabi 4:13.2.1-2ubuntu1）
+      #   2) CC=arm-linux-gnueabi-gcc
+      #   3) CFLAGS="-march=armv7-a -mfloat-abi=soft"  LDFLAGS="-mfloat-abi=soft"
+      # 上一版在这里踩过的坑是拿 hard-float 的 gnueabihf sysroot 去编 -mfloat-abi=soft：
+      #   /usr/arm-linux-gnueabihf/include/gnu/stubs.h:7: gnu/stubs-soft.h: No such file
+      # 那不是「换个编译器就能成」的事 —— sysroot 里没有 soft stubs，就必须装 armel 那套。
 
       - name: Setup cross compiler and static flags
         run: |
-          # 确定是否使用静态链接
-          STATIC_LINKING=false
+          # 除原生 amd64 外一律用 Debian/Ubuntu 的 glibc 交叉包（就是 apt 步装的那批），
+          # 全部静态链接。这个口径的代价要写明：静态 glibc 在链接期报
+          #   warning: Using 'getaddrinfo' in statically linked applications requires at
+          #   runtime the shared libraries from the glibc version used for linking
+          # 即运行时要按链接期那套 glibc 取 NSS，目标设备 glibc 差得远时 DNS 可能坏。
+          # musl 静态没有这个问题，但 musl.cc 从 runner 取不到（见上一段注释），
+          # 换来的是「整条轴同一 libc、零外网依赖、没有白烧的超时」。
           case "${{ matrix.arch }}" in
-            amd64)
-              export CC=gcc
-              # amd64 native可以使用静态链接
-              STATIC_LINKING=true
-              ;;
-            arm64)
-              if command -v aarch64-linux-musl-gcc >/dev/null 2>&1; then
-                export CC=aarch64-linux-musl-gcc
-                STATIC_LINKING=true  # musl支持静态链接
-                echo "Using musl toolchain for ${{ matrix.arch }}: aarch64-linux-musl-gcc"
-              else
-                export CC=aarch64-linux-gnu-gcc
-                STATIC_LINKING=true  # 尝试静态链接，即使使用glibc
-                echo "WARN: Using glibc toolchain for ${{ matrix.arch }}, static linking may fail"
-              fi
-              ;;
-            armv7-hardfp)
-              if command -v arm-linux-musleabihf-gcc >/dev/null 2>&1; then
-                export CC=arm-linux-musleabihf-gcc
-                STATIC_LINKING=true  # musl支持静态链接
-                echo "Using musl toolchain for ${{ matrix.arch }}: arm-linux-musleabihf-gcc"
-              else
-                export CC=arm-linux-gnueabihf-gcc
-                STATIC_LINKING=true  # 尝试静态链接，即使使用glibc
-                # 退到 glibc 静态并不是等价的产物：10-02 那轮 hardfp 就是这么绿的，
-                # 链接期同时报
-                #   warning: Using 'getaddrinfo' in statically linked applications
-                #   requires at runtime the shared libraries from the glibc version used for linking
-                # 即运行时要按链接期那套 glibc 取 NSS，DNS 在设备上可能直接坏掉。
-                # 出包不中断（要不要改回 musl-only 归发行策略定），但必须让「绿」
-                # 不等于「和别的腿同一 libc」。
-                echo "::warning::armv7-hardfp 退到了 Debian glibc 静态包（musl 工具链没取到），产物带 getaddrinfo 静态链接告警，与 musl 腿不等价"
-                echo "WARN: Using glibc toolchain for ${{ matrix.arch }}, static linking may fail"
-              fi
-              ;;
-            armv7-softfp)
-              # 软浮点这条腿没有「退到 glibc 交叉包」这条路：Debian 那套只有 hard-float，
-              # 拿它编 -mfloat-abi=soft 必在 gnu/stubs-soft.h 上炸。工具链没取到就明确失败，
-              # 不再像上一版那样 WARN 一声继续用错的编译器跑到一半再报个看不懂的错。
-              if ! command -v arm-linux-musleabi-gcc >/dev/null 2>&1; then
-                echo "ERROR: armv7-softfp 需要 arm-linux-musleabi-gcc（musl 软浮点），PATH 里没有" >&2
-                echo "PATH=$PATH" >&2
-                exit 1
-              fi
-              export CC=arm-linux-musleabi-gcc
-              STATIC_LINKING=true  # musl支持静态链接
-              echo "Using musl toolchain for ${{ matrix.arch }}: arm-linux-musleabi-gcc"
-              ;;
-            mips)
-              export CC=mips-linux-gnu-gcc
-              # mips 也应该支持静态链接
-              STATIC_LINKING=true
-              ;;
-            mipsel)
-              if command -v mipsel-linux-musl-gcc >/dev/null 2>&1; then
-                export CC=mipsel-linux-musl-gcc
-                STATIC_LINKING=true  # musl支持静态链接
-                echo "Using musl toolchain for ${{ matrix.arch }}: mipsel-linux-musl-gcc"
-              else
-                export CC=mipsel-linux-gnu-gcc
-                echo "WARN: Using glibc toolchain for ${{ matrix.arch }}, static linking may fail"
-                STATIC_LINKING=true  # 尝试静态链接，即使使用glibc
-              fi
-              ;;
-            mipsel-muslsf)
-              echo "=== mipsel-muslsf toolchain check ==="
-              echo "PATH before toolchain check: $PATH"
-              echo "Checking for mipsel-linux-muslsf-gcc..."
-              which mipsel-linux-muslsf-gcc || echo "mipsel-linux-muslsf-gcc not found in PATH"
-              ls -la /tmp/mipsel-linux-muslsf-cross/bin/ 2>/dev/null || echo "Toolchain bin directory not found"
-
-              if command -v mipsel-linux-muslsf-gcc >/dev/null 2>&1; then
-                export CC=mipsel-linux-muslsf-gcc
-                STATIC_LINKING=true  # musl支持静态链接
-                echo "Using musl toolchain for ${{ matrix.arch }}: mipsel-linux-muslsf-gcc"
-                echo "Compiler version: $($CC --version | head -1)"
-              else
-                echo "ERROR: mipsel-muslsf requires mipsel-linux-muslsf-gcc but not found in PATH"
-                echo "Available gcc compilers in /tmp:"
-                find /tmp -name "*gcc*" 2>/dev/null | head -10 || echo "No gcc found in /tmp"
-                echo "Current PATH: $PATH"
-                echo "Contents of /tmp:"
-                ls -la /tmp/ | grep -E "(mipsel|muslsf)" || echo "No mipsel/muslsf directories found"
-                exit 1
-              fi
-              ;;
-            mips64)
-              export CC=mips64-linux-gnuabi64-gcc
-              # mips64 也应该支持静态链接
-              STATIC_LINKING=true
-              ;;
-            mips64el)
-              export CC=mips64el-linux-gnuabi64-gcc
-              # mips64el 也应该支持静态链接
-              STATIC_LINKING=true
-              ;;
-            riscv64)
-              if command -v riscv64-linux-musl-gcc >/dev/null 2>&1; then
-                export CC=riscv64-linux-musl-gcc
-                STATIC_LINKING=true  # musl支持静态链接
-                echo "Using musl toolchain for ${{ matrix.arch }}: riscv64-linux-musl-gcc"
-              else
-                export CC=riscv64-linux-gnu-gcc
-                echo "WARN: Using glibc toolchain for ${{ matrix.arch }}, static linking may fail"
-                STATIC_LINKING=true  # 尝试静态链接，即使使用glibc
-              fi
-              ;;
+            amd64)       export CC=gcc ;;
+            arm64)       export CC=aarch64-linux-gnu-gcc ;;
+            armv7-hardfp) export CC=arm-linux-gnueabihf-gcc ;;
+            mips)        export CC=mips-linux-gnu-gcc ;;
+            mipsel)      export CC=mipsel-linux-gnu-gcc ;;
+            mips64)      export CC=mips64-linux-gnuabi64-gcc ;;
+            mips64el)    export CC=mips64el-linux-gnuabi64-gcc ;;
+            riscv64)     export CC=riscv64-linux-gnu-gcc ;;
+            *) echo "ERROR: 矩阵里的 arch 没有配交叉编译器：${{ matrix.arch }}" >&2; exit 1 ;;
           esac
+          STATIC_LINKING=true
+          # 交叉包在 apt 步是软失败（|| true），这里必须硬判：以前缺编译器要跑到
+          # make 里才撞出「cc1 不存在」那种看不懂的错，白烧几条腿的分钟数。
+          command -v "$CC" >/dev/null 2>&1 || {
+            echo "ERROR: $CC 不在 PATH —— apt 步的交叉包没装上" >&2
+            exit 1
+          }
 
           export CXX=${CC/gcc/g++}
           export AR=${CC/gcc/ar}
@@ -447,16 +200,6 @@ jobs:
           # 软/硬浮点平台的编译标志。Makefile.linux 的 GNB_CFLAGS 引用 $(CFLAGS)，
           # 所以这两个走环境变量就生效；链接标志见 Build 步骤的 --make-var。
           case "${{ matrix.arch }}" in
-            mipsel-muslsf)
-              export CFLAGS="-march=mips32r2 -mtune=mips32r2 -msoft-float"
-              export LDFLAGS="-msoft-float"
-              echo "Applied soft-float flags for mipsel-muslsf"
-              ;;
-            armv7-softfp)
-              export CFLAGS="-march=armv7-a -mfloat-abi=soft"
-              export LDFLAGS="-mfloat-abi=soft"
-              echo "Applied soft-float flags for armv7-softfp"
-              ;;
             armv7-hardfp)
               export CFLAGS="-march=armv7-a -mfloat-abi=hard -mfpu=vfpv3-d16"
               export LDFLAGS="-mfloat-abi=hard"
@@ -564,7 +307,7 @@ jobs:
       contents: write
       actions: read
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - name: Checkout tooling
         uses: actions/checkout@v4

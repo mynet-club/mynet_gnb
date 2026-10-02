@@ -67,7 +67,7 @@ OS → Makefile 一律跟作者的 Makefile 走，我们不加编译入口：
 
 | workflow | 平台 | 说明 |
 |---|---|---|
-| `build_linux.yml` | linux | amd64, arm64, armv7-softfp/hardfp, mips(el), mips64(el), riscv64；交叉工具链，静态链接 |
+| `build_linux.yml` | linux | amd64, arm64, armv7-hardfp, mips(el), mips64(el), riscv64；Debian/Ubuntu 的 glibc 交叉包，静态链接。**armv7 软浮点暂不覆盖**：需要 musl 的 musleabi（GitHub runner 连不通 musl.cc）或 Debian armel 那套包，而无 VFP 的 armv7 设备是极小概率；恢复要改的三处写在 workflow 的注释里 |
 | `build_openwrt.yml` | openwrt | 官方 SDK 24.10，动态 musl（运行时由设备提供） |
 | `build_darwin.yml` | darwin | `clang -arch x86_64` / `-arch arm64` |
 | `build_windows.yml` | windows | MinGW-w64 交叉，`.exe` |

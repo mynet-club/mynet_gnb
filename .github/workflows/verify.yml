@@ -27,7 +27,7 @@ concurrency:
 jobs:
   tooling-lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - name: Checkout tooling
         uses: actions/checkout@v4
@@ -35,7 +35,7 @@ jobs:
       - name: Install lint dependencies
         # apt 默认对 dpkg 锁和镜像连接都不设超时，撞上就是无声挂到 job 默认 6 小时；
         # 参数与成因见 build_linux.yml 的 Install dependencies。
-        timeout-minutes: 10
+        timeout-minutes: 8
         run: |
           APT_OPTS="-o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 -o Acquire::http::Timeout=20"
           sudo apt-get $APT_OPTS update -qq </dev/null
@@ -48,7 +48,7 @@ jobs:
 
   channel-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - name: Checkout tooling
         uses: actions/checkout@v4
@@ -59,7 +59,7 @@ jobs:
       - name: Install build dependencies
         # apt 默认对 dpkg 锁和镜像连接都不设超时，撞上就是无声挂到 job 默认 6 小时；
         # 参数与成因见 build_linux.yml 的 Install dependencies。
-        timeout-minutes: 10
+        timeout-minutes: 8
         run: |
           APT_OPTS="-o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 -o Acquire::http::Timeout=20"
           sudo apt-get $APT_OPTS update -qq </dev/null

@@ -18,7 +18,7 @@ concurrency:
 jobs:
   plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     outputs:
       channels: ${{ steps.pick.outputs.channels }}
     steps:
@@ -61,7 +61,7 @@ jobs:
     needs: plan
     name: FreeBSD amd64 (${{ matrix.channel }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -120,7 +120,7 @@ jobs:
     needs: plan
     name: OpenBSD amd64 (${{ matrix.channel }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -179,7 +179,7 @@ jobs:
 
   publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     needs: [plan, build-freebsd, build-openbsd]
     # softprops/action-gh-release 建/改 Release 要 POST /releases：默认 workflow token
     # 只读，会在同一处 HTTP 403（其余四条线的 gh 版已经撞到过）。显式收窄到 contents: write。

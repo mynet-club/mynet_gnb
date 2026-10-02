@@ -19,7 +19,7 @@ concurrency:
 jobs:
   plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     outputs:
       channels: ${{ steps.pick.outputs.channels }}
     steps:
@@ -73,7 +73,7 @@ jobs:
         arch: [amd64, arm64]
 
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
 
     steps:
       - name: Free disk space
@@ -151,7 +151,7 @@ jobs:
       contents: write
       actions: read
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - name: Checkout tooling
         uses: actions/checkout@v4
