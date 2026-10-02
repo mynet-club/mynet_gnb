@@ -1,10 +1,11 @@
 #!/bin/sh
 # check.sh — mynet_gnb 的真检查（lint / test）
 #
-# 本仓是 opengnb fork，核心不变量是 AGENTS.md §1.1：
-#   **src/ 保持上游原样，我们的改动一律走 packages/ 下的 git format-patch 补丁串。**
-# 所以这里最有价值的检查不是「编译过不过」，而是**补丁串还能不能干净地打上去** ——
-# 它一旦失败，下一个 release_source_commit 就切不出来，发行线会断供。
+# 本仓是 opengnb fork，核心不变量（2026-10-02 开发者裁定）：
+#   **改动以提交为真相 —— 基线提交 + proxy 提交压在作者快照上；packages/ 里的补丁串
+#   是按需从提交导出的溯源件，不是真相源。**
+# 所以这里最有价值的检查不是「编译过不过」，而是**补丁串还能不能在纯基线树上干净重放** ——
+# 它一旦失败，导出的补丁串和提交就已经不是同一份东西，下一个基线也切不出来。
 # 注意：CI 出包**不再** apply 补丁（它按 packages/RELEASE-SOURCES 里已固定的提交构建），
 # 所以这条检查是源码准备线的守护，而不是发版前的一步。
 #
@@ -26,10 +27,9 @@ skipped() { printf '  ⚠ 已跳过：%s\n' "$1"; skip=$((skip+1)); }
 # ── lint ─────────────────────────────────────────────────────
 lint_scripts() {
   echo "▸ lint · 脚本语法"
-  # 按 shebang 选检查器。⚠️ 一律用 sh -n 会**假失败**：本仓 release.sh /
-  # sync_source.sh 是 bash 脚本，用了 process substitution `done < <(…)`，
-  # 那是 bashism，sh -n 直接报 syntax error（实测已撞到）。
-  for f in "$ROOT"/scripts/*.sh "$ROOT"/packages/rebase.sh; do
+  # 按 shebang 选检查器。⚠️ 一律用 sh -n 会**假失败**：bash 脚本里的 process
+  # substitution `done < <(…)` 是 bashism，sh -n 直接报 syntax error（实测撞到过）。
+  for f in "$ROOT"/scripts/*.sh; do
     [ -f "$f" ] || continue
     _rel=${f#"$ROOT"/}
     case "$(head -1 "$f")" in
@@ -48,7 +48,7 @@ lint_scripts() {
   done
 
   if command -v shellcheck >/dev/null 2>&1; then
-    _sc=$(shellcheck "$ROOT"/scripts/*.sh "$ROOT"/packages/rebase.sh 2>&1 || true)
+    _sc=$(shellcheck "$ROOT"/scripts/*.sh 2>&1 || true)
     _n=$(printf '%s\n' "$_sc" | grep -c '^In ' || true)
     if [ "$_n" -eq 0 ]; then
       ok "shellcheck 无告警"
@@ -130,7 +130,7 @@ test_release_channels() {
     else
       _export="$_lsc"
     fi
-    if ! git archive "$_export" | tar -x -C "$_t"; then
+    if ! git archive "$_export" | tar -xf - -C "$_t"; then
       bad "通道 ${_ch} 导出纯上游失败（$_export）"; rm -rf "$_t"; continue
     fi
     _base=$(dirname "$_pkg")

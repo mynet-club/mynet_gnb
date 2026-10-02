@@ -14,8 +14,8 @@
 #   scripts/apply_packages.sh [--src DIR] [--packages DIR]
 #
 #   默认 --src .，--packages 自动挑选：packages/ 下版本前缀与 src/version 相符的
-#   基线目录（即 packages/<版本>-<上游commit>/）。有多个候选（例如 1.6.8-c411f14ee647
-#   与 1.6.8-dev 都以 1.6.8 开头）时必须用 --packages 显式指定。
+#   基线目录（即 packages/<版本>-<上游commit>/）。当前只有一个（1.6.8-dev）；
+#   若将来同时保留两条线，用 --packages 显式指定。
 #
 # 只有一个包：p1-route-proxy，无前置依赖。
 #
@@ -69,9 +69,10 @@ fi
 
 [ -n "$PACKAGES" ] || {
     echo "错误: 在 packages/ 下找不到版本为 $SRC_VERSION 的基线目录。" >&2
-    echo "      src/ 可能刚同步了上游新版，而补丁包还没重基到新 commit。" >&2
+    echo "      src/ 可能刚同步了上游新版，而补丁包还没重基到新基线。" >&2
     echo "      处理办法（二选一）：" >&2
-    echo "        1) 先按 packages/README.md 用 packages/rebase.sh 把补丁串重基到新基线并重新归档；" >&2
+    echo "        1) 按 packages/RELEASE-SOURCES 的「接作者新快照的固定动作」在新基线上" >&2
+    echo "           重放 proxy 提交，再从新提交导出补丁串覆盖 packages/<基线>/p1-route-proxy/patches/；" >&2
     echo "        2) 若本次确实要构建不带补丁的上游版，跳过本脚本（发行线不走这里）。" >&2
     echo "      也可用 --packages 显式指定基线目录，或 --src 指定源码树。" >&2
     exit 1
