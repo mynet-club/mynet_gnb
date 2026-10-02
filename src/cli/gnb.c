@@ -332,6 +332,7 @@ void show_description() {
     }
     printf("\n");
     printf("%s\n", GNB_BUILD_STRING);
+    printf("Features: proxy\n");
 }
 
 static void exec_loop_script(gnb_core_t *gnb_core, const char *script_file_name) {

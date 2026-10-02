@@ -60,6 +60,7 @@ GNB_CORE_OBJS =                                  \
        ./src/gnb_detect_worker.o                 \
        ./src/gnb_conf.o                          \
        ./src/gnb_conf_file.o                     \
+       ./src/gnb_proxy.o                    \
        ./src/gnb_config_lite.o                   \
        ./src/gnb_node.o                          \
        ./src/gnb_udp.o                           \
