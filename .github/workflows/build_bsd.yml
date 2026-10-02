@@ -143,7 +143,11 @@ jobs:
       - name: Build and package (${{ matrix.channel }})
         uses: vmactions/openbsd-vm@v1
         with:
-          release: "7.5"
+          # 7.9 = 当前稳定版。上一版钉 7.5，VM 能起但 pkg_add 报
+          #   https://cdn.openbsd.org/pub/OpenBSD/7.5/packages/amd64/: no such dir
+          # OpenBSD 官方只镜像当前 release（+ snapshots）的 packages，旧版端口集会下架，
+          # 所以这里跟着当前版走，别钉死在某个 EOL 版本上。
+          release: "7.9"
           usesh: true
           prepare: |
             pkg_add gmake git
@@ -173,6 +177,11 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     needs: [plan, build-freebsd, build-openbsd]
+    # softprops/action-gh-release 建/改 Release 要 POST /releases：默认 workflow token
+    # 只读，会在同一处 HTTP 403（其余四条线的 gh 版已经撞到过）。显式收窄到 contents: write。
+    permissions:
+      contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v4
 

@@ -200,7 +200,18 @@ jobs:
           dest="$RUNNER_TEMP/zlib-$arch"
           rm -rf "$dest"; mkdir -p "$dest"
           curl -fsSL -o "$RUNNER_TEMP/$ipk" "$base/$ipk"
-          tar -xOf "$RUNNER_TEMP/$ipk" data.tar.gz | tar -xzf - -C "$dest" ./usr/lib/libz.a
+          # ipk 是两层结构：外层 tar 里装 debian-binary/control.tar.gz/data.tar.gz，
+          # 内层 data.tar.gz 才装 ./usr/lib/libz.a。成员名一律带 ./ 前缀，而 GNU tar
+          # 解包默认 --anchored，用裸名 data.tar.gz 点成员会报 "Not found in archive"
+          # （macOS 的 bsdtar 不锚定，所以这条上一版本地验过、CI 六个架构全灭）。
+          # 这里不做成员匹配：外层整包解出，再解内层，最后按路径断言。
+          tar -xf "$RUNNER_TEMP/$ipk" -C "$dest"
+          tar -xzf "$dest/data.tar.gz" -C "$dest"
+          if [ ! -f "$dest/usr/lib/libz.a" ]; then
+            echo "ipk $ipk 里没有 usr/lib/libz.a，换口径之前不要往下构：" >&2
+            ls -R "$dest" >&2
+            exit 1
+          fi
           ls -l "$dest/usr/lib/libz.a"
           echo "libdir=$dest/usr/lib" >> "$GITHUB_OUTPUT"
           echo "source=$base/$ipk"    >> "$GITHUB_OUTPUT"
@@ -246,6 +257,12 @@ jobs:
 
   publish:
     needs: [plan, build]
+    # gh release create/upload 打 POST/PATCH /releases：默认 workflow token 是只读的，
+    # 上一轮就是这么挂在 HTTP 403 "Resource not accessible by integration"。
+    # 建 Release 属于发行动作，显式给 contents: write，其余权限保持收窄。
+    permissions:
+      contents: write
+      actions: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

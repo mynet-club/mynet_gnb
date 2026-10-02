@@ -126,6 +126,12 @@ jobs:
 
   publish:
     needs: [plan, build]
+    # gh release create/upload 打 POST/PATCH /releases：默认 workflow token 是只读的，
+    # 上一轮就是这么挂在 HTTP 403 "Resource not accessible by integration"。
+    # 建 Release 属于发行动作，显式给 contents: write，其余权限保持收窄。
+    permissions:
+      contents: write
+      actions: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

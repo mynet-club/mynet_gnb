@@ -83,12 +83,16 @@ jobs:
           - mipsel
           - mips64
           - mips64el
-          # riscv64 暂摘出轴（2026-10-02 裁定）：作者源码在 LP64 musl 下类型冲突，
+          # riscv64 暂摘出轴（2026-10-02 裁定）：作者源码在 LP64 下类型冲突，
           # src/gnb_conf_file.h:24 声明返回 gnb_uint64_t（gnb_def.h:22 = unsigned long long），
           # src/gnb_conf_file.c:841 定义成 uint64_t（LP64 下 = unsigned long）→ 编译期
           # conflicting types。这不是构建环境能绕的（不同于 OpenWrt 的 -lz），改它等于
           # 往 git diff b1d4534..ffdf816 里加第九个文件。作者侧修好后取消注释即可，
           # 下面的工具链分支（Setup musl / cross compiler）都还留着。
+          # 同一轮真跑（tag v1.6.8-dev）确认这不是 riscv 专属，冲突在数据模型本身：
+          # Linux amd64/arm64/mips64/mips64el 与 FreeBSD amd64 撞的是同一行，ILP32 的
+          # mips/mipsel/armv7-hardfp 三条腿全绿；macOS/Windows 侥幸编得过 —— 它们 SDK 里
+          # uint64_t 本身就是 unsigned long long。所以摘 riscv64 只挡住了这一类里的一例。
           # - riscv64
 
     steps:
@@ -225,17 +229,26 @@ jobs:
               fi
               ;;
             armv7-softfp|armv7-hardfp)
-              if [ ! -d arm-linux-musleabihf-cross ]; then
-                if wget -q https://musl.cc/arm-linux-musleabihf-cross.tgz -O arm-linux-musleabihf-cross.tgz; then
-                  tar -xzf arm-linux-musleabihf-cross.tgz && musl_available=true
-                else
-                  echo "WARN: arm-musleabihf musl download failed, will use glibc cross-compiler"
-                fi
+              # 浮点 ABI 决定要哪份工具链：softfp 用 musl 的 musleabi（软浮点），
+              # hardfp 用 musleabihf。上一版两条腿共用 eabihf 那一份，musl.cc 下载一抖
+              # 就退到 Debian 的 arm-linux-gnueabihf-gcc，再叠 -mfloat-abi=soft 去要
+              # glibc 的软浮点 stubs：
+              #   /usr/arm-linux-gnueabihf/include/gnu/stubs.h:7: gnu/stubs-soft.h: No such file
+              # Debian 的 arm 交叉包只有 hard 一套，这个组合不存在「换个编译器就能成」的一面。
+              if [ '${{ matrix.arch }}' = armv7-softfp ]; then
+                t=arm-linux-musleabi-cross
               else
-                musl_available=true
+                t=arm-linux-musleabihf-cross
               fi
-              if [ "$musl_available" = "true" ] && [ -d arm-linux-musleabihf-cross/bin ]; then
-                echo "/tmp/arm-linux-musleabihf-cross/bin" >> $GITHUB_PATH
+              if [ -d "$t" ]; then
+                musl_available=true
+              elif wget -q -T 30 -t 3 "https://musl.cc/$t.tgz" -O "$t.tgz"; then
+                tar -xzf "$t.tgz" && musl_available=true
+              else
+                echo "WARN: $t 下载失败（wget 已重试 3 次），下一步会明确报缺哪个工具链"
+              fi
+              if [ "$musl_available" = "true" ] && [ -d "$t/bin" ]; then
+                echo "/tmp/$t/bin" >> $GITHUB_PATH
                 echo "MUSL_AVAILABLE=true" >> $GITHUB_ENV
               fi
               ;;
@@ -284,7 +297,7 @@ jobs:
                 echo "WARN: Using glibc toolchain for ${{ matrix.arch }}, static linking may fail"
               fi
               ;;
-            armv7-softfp|armv7-hardfp)
+            armv7-hardfp)
               if command -v arm-linux-musleabihf-gcc >/dev/null 2>&1; then
                 export CC=arm-linux-musleabihf-gcc
                 STATIC_LINKING=true  # musl支持静态链接
@@ -294,6 +307,19 @@ jobs:
                 STATIC_LINKING=true  # 尝试静态链接，即使使用glibc
                 echo "WARN: Using glibc toolchain for ${{ matrix.arch }}, static linking may fail"
               fi
+              ;;
+            armv7-softfp)
+              # 软浮点这条腿没有「退到 glibc 交叉包」这条路：Debian 那套只有 hard-float，
+              # 拿它编 -mfloat-abi=soft 必在 gnu/stubs-soft.h 上炸。工具链没取到就明确失败，
+              # 不再像上一版那样 WARN 一声继续用错的编译器跑到一半再报个看不懂的错。
+              if ! command -v arm-linux-musleabi-gcc >/dev/null 2>&1; then
+                echo "ERROR: armv7-softfp 需要 arm-linux-musleabi-gcc（musl 软浮点），PATH 里没有" >&2
+                echo "PATH=$PATH" >&2
+                exit 1
+              fi
+              export CC=arm-linux-musleabi-gcc
+              STATIC_LINKING=true  # musl支持静态链接
+              echo "Using musl toolchain for ${{ matrix.arch }}: arm-linux-musleabi-gcc"
               ;;
             mips)
               export CC=mips-linux-gnu-gcc
@@ -475,6 +501,12 @@ jobs:
 
   publish:
     needs: [plan, build]
+    # gh release create/upload 打 POST/PATCH /releases：默认 workflow token 是只读的，
+    # 上一轮就是这么挂在 HTTP 403 "Resource not accessible by integration"。
+    # 建 Release 属于发行动作，显式给 contents: write，其余权限保持收窄。
+    permissions:
+      contents: write
+      actions: read
     runs-on: ubuntu-latest
     steps:
       - name: Checkout tooling
