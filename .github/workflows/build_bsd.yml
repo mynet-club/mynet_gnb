@@ -244,37 +244,13 @@ jobs:
             .release/production/*.tgz
             .release/internal/*.tgz
 
-      # 与 darwin/linux/windows 同一口径：只有生产通道包进下载目录，且落到 ${TAG}/ 子目录。
-      # 旧版把裸 gnb 单文件 rsync 到 REMOTE_DIR 根（既无 tag 也含 StrictHostKeyChecking=no），
-      # 单文件还违反「四程序同一次构建」，已改掉。
-      - name: Upload to remote via rsync (production packages only)
+      # 生产包进真正的下载面 = ctl.mynet.club 的 release 上传接口（对外取件路径 /d/gnb/<文件名>）。
+      # 不再 rsync 到 download.mynet.club：那条链路在 mynet_ctl 的知识库里已判废弃
+      # （docs/knowledge-base/v2-upgrade-plan.md:20「download.mynet.club 已废弃…已禁止目录访问」、
+      # :24「CI 未对接 CTL」），实测 /gnb/<tag>/ 下面也确实一个文件都没有。
+      # 命名/枚举/variant/is_stable 的契约都写在 .github/actions/ctl-publish/action.yml 里，五轴共用一份。
+      - name: Publish production packages to CTL
         if: startsWith(github.ref, 'refs/tags/')
-        env:
-          SSH_HOST: ${{ secrets.DOWNLOAD_SSH_HOST }}
-          SSH_USER: ${{ secrets.DOWNLOAD_SSH_USER }}
-          SSH_KEY: ${{ secrets.DOWNLOAD_SSH_KEY }}
-          SSH_PORT: ${{ secrets.DOWNLOAD_SSH_PORT }}
-          REMOTE_DIR: ${{ secrets.DOWNLOAD_SSH_REMOTE_DIR }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          SRC_DIR=".release/production"
-          if [[ ! -d "$SRC_DIR" ]] || [[ -z "$(ls -A "$SRC_DIR" 2>/dev/null)" ]]; then
-            echo "没有生产通道产物（internal/ 里的开发包不进下载目录）"; exit 0; fi
-          if [[ -z "${SSH_HOST:-}" || -z "${SSH_USER:-}" || -z "${SSH_KEY:-}" || -z "${REMOTE_DIR:-}" ]]; then
-            echo "SSH upload skipped (secrets not fully configured)."; exit 0; fi
-          TAG="${{ github.ref_name }}"
-          PORT="${SSH_PORT:-22}"
-          DEST_DIR="${REMOTE_DIR%/}/${TAG}/"
-          mkdir -p ~/.ssh; chmod 700 ~/.ssh
-          echo "$SSH_KEY" > ~/.ssh/id_rsa; chmod 600 ~/.ssh/id_rsa
-          if [[ "$PORT" != "22" ]]; then
-            ssh-keyscan -p "$PORT" -t rsa,ecdsa,ed25519 "$SSH_HOST" | awk -v h="$SSH_HOST" -v p="$PORT" '{ $1 = "["h"]:"p; print }' >> ~/.ssh/known_hosts 2>/dev/null || true
-          else
-            ssh-keyscan -p "$PORT" -t rsa,ecdsa,ed25519 "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
-          fi
-          chmod 644 ~/.ssh/known_hosts || true
-          SSH_OPTS="-i ~/.ssh/id_rsa -p $PORT -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o BatchMode=yes -o ConnectTimeout=15"
-          ssh $SSH_OPTS "$SSH_USER@$SSH_HOST" "echo 'SSH OK'" || { echo "SSH connectivity failed"; exit 1; }
-          ssh $SSH_OPTS "$SSH_USER@$SSH_HOST" "mkdir -p '$DEST_DIR'"
-          rsync -avz -e "ssh $SSH_OPTS" "$SRC_DIR/" "$SSH_USER@$SSH_HOST:$DEST_DIR"
+        uses: ./.github/actions/ctl-publish
+        with:
+          token: ${{ secrets.CTL_RELEASE_UPLOAD_TOKEN }}

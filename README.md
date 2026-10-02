@@ -57,7 +57,7 @@ OS → Makefile 一律跟作者的 Makefile 走，我们不加编译入口：
 
 - 推送形如 `v*.*.*` 的 tag（例如 `v1.6.8-dev`）→ 五个 build workflow 全矩阵跑，并对外发行；
 - Actions 页面 `workflow_dispatch` 手动跑：**只验构建，不发行**。没有 tag 就没有 Release，
-  各 workflow 的 Release/rsync 步骤都带 `startsWith(github.ref, 'refs/tags/')` 条件跳过
+  各 workflow 的 Release 与 CTL 上传步骤都带 `startsWith(github.ref, 'refs/tags/')` 条件跳过
   （包名版本取自 `version` + `g<short-sha>`，只落 workflow 产物）。要窄验证就单独 dispatch
   那一个 workflow，不必动 tag；
 - `verify.yml` 跟着 `main` 的 push 跑工具守护与各通道单测。
@@ -82,8 +82,14 @@ OS → Makefile 一律跟作者的 Makefile 走，我们不加编译入口：
 arch 段不含下划线 ⇒ 这种名字注册表解析不了，也就覆盖不了生产包、不会被当成生产包登记。
 
 publish 作业按产物目录名回 `RELEASE-SOURCES` 查 `publish` 字段分类，不靠文件名模式匹配：
-只有 production 包 rsync 到 `DOWNLOAD_SSH_*` 指向的下载目录（`{REMOTE_DIR}/{tag}/`），
-校验文件按平台命名（`checksums-<platform>.txt`），避免多个 workflow 并发写同一个同名资产。
+只有 production 包 POST 到 **CTL**（`POST https://ctl.mynet.club/api/v2/releases`，
+Bearer token = secret `CTL_RELEASE_UPLOAD_TOKEN`；对外取件路径
+`https://ctl.mynet.club/d/gnb/<文件名>`），校验文件按平台命名（`checksums-<platform>.txt`），
+避免多个 workflow 并发写同一个同名资产。以前那条 rsync 到 `download.mynet.club` 的链路已废弃
+（见 `mynet_ctl/docs/knowledge-base/v2-upgrade-plan.md`），不要再配 `DOWNLOAD_SSH_*`。
+CTL 的 `PLATFORMS` 里**没有 openbsd**，而 `VALID_COMBINATIONS['openwrt']` 里只有
+`mipsel-softfp`/`mipsel-muslsf`、没有 `mipsel-sf`（那是 `openwrt-sdk` 的 arch）——
+`ctl-publish` 动作对这两类包 fail-loud 报错，不静默丢包；要发就得改 ctl 枚举或改我们的 arch 标签。
 
 本地守护
 ------

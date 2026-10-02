@@ -1,0 +1,109 @@
+name: Publish production packages to CTL
+description: >
+  把 .release/production 里的 tgz 逐个 POST 到 ctl.mynet.club 的 release 上传接口，
+  也就是我方真正的下载面（/d/gnb/<文件名>）。download.mynet.club 已废弃，不再往它 rsync。
+inputs:
+  token:
+    description: CTL 的 release:upload Bearer token（来自 secret）
+    required: true
+  base_url:
+    description: CTL 站点基址
+    required: false
+    default: https://ctl.mynet.club
+  dir:
+    description: 待上传的生产包目录
+    required: false
+    default: .release/production
+
+runs:
+  using: composite
+  steps:
+    - name: Upload packages to CTL
+      shell: bash
+      env:
+        CTL_TOKEN: ${{ inputs.token }}
+        CTL_BASE: ${{ inputs.base_url }}
+        SRC_DIR: ${{ inputs.dir }}
+        REF_NAME: ${{ github.ref_name }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        set -euo pipefail
+        shopt -s nullglob
+        TGZS=("$SRC_DIR"/*.tgz)
+        if [ ${#TGZS[@]} -eq 0 ]; then
+          echo "本批没有生产通道 tgz（internal/ 的开发包按设计不进下载面），跳过。"
+          exit 0
+        fi
+
+        # 缺 token 必须红。上一版这里是 echo skipped + exit 0，结果是 tag 发了、GitHub
+        # Release 也传了，镜像一个包都没收到而 CI 全绿 —— 出包路径上的静默跳过等于丢包。
+        if [ -z "${CTL_TOKEN:-}" ]; then
+          echo "ERROR: 上传 token 未配置（secret CTL_RELEASE_UPLOAD_TOKEN），但已经在发 tag。" >&2
+          echo "       去 CTL 后台 Tokens 建一个带 release:upload 权限的 token 配上；本 job 拒绝静默发行。" >&2
+          exit 1
+        fi
+
+        # variant 一律不传：ctl 的 ReleaseService::upload() 把 variant 当第 5 个参数喂给
+        # generateFilename(…, $ext)，非空 variant 直接变成文件扩展名
+        # （gnb_linux_amd64_v1.6.8-dev.main-patched），而下载侧 parseFilename 只认
+        # tgz|zip|tar.gz|ipk ⇒ 记录建得出来但下不到。通道信息在包内 MANIFEST 与产物目录名里。
+        #
+        # is_stable 按 tag 判：ctl 的 refreshLatestFlag() 只在 stable() 作用域里选 latest，
+        # 而客户端取的就是 latest —— 把 -dev 预发布报成 stable，现网节点会被推着升到开发包。
+        case "$REF_NAME" in
+          *-*) IS_STABLE=false ;;
+          *)   IS_STABLE=true  ;;
+        esac
+        echo "tag=$REF_NAME is_stable=$IS_STABLE 待上传 ${#TGZS[@]} 个包"
+
+        failed=""
+        for f in "${TGZS[@]}"; do
+          name="$(basename "$f")"
+          # 命名契约的 SSOT 是 mynet_ctl 的 ReleaseDomainService::{generateFilename,parseFilename}：
+          # {name}_{platform}_{arch}_{version}.{ext}。platform 用显式枚举（和 ctl 一致），
+          # 否则贪婪匹配会把 openwrt_mipsel 切成两段。
+          if [[ ! "$name" =~ ^gnb_(linux|openwrt-sdk|openwrt|darwin|windows|freebsd|openbsd)_([a-z0-9-]+)_(v[0-9A-Za-z.-]+)\.tgz$ ]]; then
+            echo "ERROR: 包名 $name 不符合 ctl 命名契约，拒绝上传（要改改 gnb-dist.sh 的包名段，不是改这里）" >&2
+            failed="$failed $name(命名)"
+            continue
+          fi
+          platform="${BASH_REMATCH[1]}"
+          arch="${BASH_REMATCH[2]}"
+          version="${BASH_REMATCH[3]}"
+
+          if [ "$platform" = "openbsd" ]; then
+            echo "ERROR: ctl 的 PLATFORMS 枚举里没有 openbsd，这条包发不出去。" >&2
+            echo "       要么 ctl 侧加枚举，要么 openbsd 不进下载面 —— 先记失败，不静默丢。" >&2
+            failed="$failed $name(openbsd无枚举)"
+            continue
+          fi
+
+          if ! resp="$(curl -sS --max-time 300 --retry 2 \
+                        -H "Authorization: Bearer ${CTL_TOKEN}" \
+                        -F product=gnb -F "version=${version}" -F "platform=${platform}" -F "arch=${arch}" \
+                        -F "is_stable=${IS_STABLE}" \
+                        -F "changelog=GitHub Actions ${REF_NAME} (${RUN_URL})" \
+                        -F "file=@${f}" \
+                        -w $'\n%{http_code}' \
+                        "${CTL_BASE}/api/v2/releases")"; then
+            echo "ERROR: $name 传输失败（连不上 ctl 或超时）" >&2
+            failed="$failed $name(传输)"
+            continue
+          fi
+
+          code="${resp##*$'\n'}"
+          body="${resp%$'\n'*}"
+          if [ "$code" != "201" ]; then
+            echo "ERROR: $name HTTP $code —— $(printf '%s' "$body" | tr -d '\n' | head -c 400)" >&2
+            failed="$failed $name(HTTP$code)"
+            continue
+          fi
+          url="$(printf '%s' "$body" | sed -n 's/.*"download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+          echo "OK: $name -> ${url:-（响应里没有 download_url）}"
+        done
+
+        if [ -n "$failed" ]; then
+          echo "有包没发出去：$failed" >&2
+          exit 1
+        fi
+        echo "全部 ${#TGZS[@]} 个包已进 CTL 下载面。"

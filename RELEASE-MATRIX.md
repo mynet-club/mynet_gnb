@@ -66,7 +66,11 @@ non-production channel); the arch field cannot contain an underscore,
 so such a name is unparseable by the registry and a dev package can neither overwrite a
 production package nor be registered as one. Publish jobs classify by artifact directory
 name against `RELEASE-SOURCES`, never by filename glob, and only production packages are
-rsynced to the download server.
+POSTed to CTL (`POST /api/v2/releases`, Bearer token from secret `CTL_RELEASE_UPLOAD_TOKEN`,
+served back as `https://ctl.mynet.club/d/gnb/<filename>`). The old rsync to the deprecated
+`download.mynet.club` is gone. Two registry gaps are surfaced as failures instead of skipped:
+ctl's `PLATFORMS` has no `openbsd`, and `VALID_COMBINATIONS['openwrt']` accepts
+`mipsel-softfp`/`mipsel-muslsf` but not `mipsel-sf` (that arch belongs to `openwrt-sdk`).
 
 ## Platform expectations
 
