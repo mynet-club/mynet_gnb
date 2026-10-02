@@ -74,7 +74,22 @@ jobs:
         # arch 必须是真正的矩阵轴。写成 matrix.include 的独立条目时，GitHub 只把
         # 最后一条并进组合（上一版因此只出 riscv64 一个包，另外八个架构静默缺席，
         # 而 publish 只看得到「下载目录里有的那些」）。
-        arch: [amd64, arm64, armv7-softfp, armv7-hardfp, mips, mipsel, mips64, mips64el, riscv64]
+        arch:
+          - amd64
+          - arm64
+          - armv7-softfp
+          - armv7-hardfp
+          - mips
+          - mipsel
+          - mips64
+          - mips64el
+          # riscv64 暂摘出轴（2026-10-02 裁定）：作者源码在 LP64 musl 下类型冲突，
+          # src/gnb_conf_file.h:24 声明返回 gnb_uint64_t（gnb_def.h:22 = unsigned long long），
+          # src/gnb_conf_file.c:841 定义成 uint64_t（LP64 下 = unsigned long）→ 编译期
+          # conflicting types。这不是构建环境能绕的（不同于 OpenWrt 的 -lz），改它等于
+          # 往 git diff b1d4534..ffdf816 里加第九个文件。作者侧修好后取消注释即可，
+          # 下面的工具链分支（Setup musl / cross compiler）都还留着。
+          # - riscv64
 
     steps:
       - name: Free disk space
