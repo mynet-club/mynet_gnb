@@ -177,11 +177,15 @@ jobs:
           echo "staging_dir=$STAGING_DIR" >> "$GITHUB_OUTPUT"
           echo "strip=$STRIP" >> "$GITHUB_OUTPUT"
 
-      # 上游新的 Makefile.openwrt 在已 -DNO_GZIP=1 的情况下仍把 -lz 硬写进链接行
-      # （b1d4534 起）。按上游口径走：不动源码，在构建环境里补上该 target 的真实
-      # zlib —— 从官方仓库取 zlib-dev ipk，只用里面的 libz.a。
-      # 选静态那一份的原因：源码是 NO_GZIP 构建，一个 zlib 符号都不会被引用，
-      # libz.a 只负责让链接器闭嘴；换成 libz.so 就给设备凭空加了运行时依赖。
+      # 上游新的 Makefile.openwrt 把 -lz 硬写进链接行（b1d4534 起），CFLAGS 里却只有
+      # -I./libs —— 编译期吃的是仓内 vendored 的 libs/zlib/zlib.h，链接期要的是外部 libz，
+      # 口径本身是分裂的。zlib 也不是空转：src/packet_filter/gnb_pf_zip.o 就在
+      # Makefile.openwrt.inc:59 的 PF 对象表里，deflate/inflate 真用 z_stream；
+      # 那个 -DNO_GZIP=1 全树没有任何 #ifdef 读它（只剩各 Makefile 自己在传）。
+      # 按上游口径走：不动源码，在构建环境里补该 target 的真实 zlib —— 从官方仓库取
+      # zlib-dev ipk（1.3.1，与 vendored 头同版本，不会引入 ABI 斜差），只用里面的 libz.a。
+      # 取 .a 不取 .so：静态库直接进产物，设备侧不必再装 zlib 运行时；换 .so 等于凭空
+      # 加一条依赖。
       - name: Provide zlib for the SDK link step
         id: zlib
         run: |
