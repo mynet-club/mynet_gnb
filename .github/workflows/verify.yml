@@ -13,7 +13,9 @@ on:
   pull_request:
   push:
     branches:
-      - dev-2026-01
+      # 主线就是发行线（b1d4534 → ffdf816 → 工具），所以守护跟着它跑。
+      # dev-2026-01 是换基前的旧线，那份 SSOT 还是三通道口径，在这里跑必然红。
+      - main
 
 env:
   CHANNELS: main,main-patched
