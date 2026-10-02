@@ -307,7 +307,7 @@ void gnb_pf_tun(gnb_core_t *gnb_core, gnb_pf_core_t *pf_core, gnb_payload16_t *p
         if ( GNB_PF_FINISH == pf_ctx_st.pf_status ) {
             break;
         }
-        if ( GNB_PF_ERROR == pf_ctx_st.pf_status || GNB_PF_DROP == pf_ctx_st.pf_status ) {
+        if ( GNB_PF_ERROR == pf_ctx_st.pf_status || GNB_PF_DROP == pf_ctx_st.pf_status || GNB_PF_NOROUTE == pf_ctx_st.pf_status ) {
             goto pf_tun_finish;
         }
     }

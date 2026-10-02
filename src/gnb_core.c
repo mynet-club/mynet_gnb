@@ -43,6 +43,7 @@
 #include "gnb_time.h"
 #include "gnb_keys.h"
 #include "gnb_mmap.h"
+#include "gnb_proxy.h"
 #include "gnb_time.h"
 
 #ifdef __UNIX_LIKE_OS__
@@ -383,6 +384,8 @@ gnb_core_t* gnb_core_create(gnb_conf_t *conf) {
     memcpy(gnb_core->conf, conf, sizeof(gnb_conf_t));
     gnb_core->log = &gnb_core->ctl_block->core_zone->log_ctx_st;
     gnb_log_ctx_init(gnb_core->log);
+    /* 日志就绪后再载 proxy.conf，避免加载成功/失败日志被丢掉 */
+    gnb_proxy_cfg_load(gnb_core, gnb_core->conf->conf_dir);
     gnb_core->ed25519_private_key = gnb_core->ctl_block->core_zone->ed25519_private_key;
     gnb_core->ed25519_public_key  = gnb_core->ctl_block->core_zone->ed25519_public_key;
     gnb_core->index_address_ring.address_list = (gnb_address_list_t *)gnb_core->ctl_block->core_zone->index_address_block;
