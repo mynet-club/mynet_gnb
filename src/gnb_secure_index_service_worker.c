@@ -462,6 +462,7 @@ static void* thread_worker_func( void *data ) {
         handle_recv_queue(gnb_core);
         GNB_SLEEP_MILLISECOND(150);
     } while(gnb_index_service_worker->thread_worker_flag);
+    gnb_index_service_worker->thread_worker_run_flag = 0;
     return NULL;
 }
 

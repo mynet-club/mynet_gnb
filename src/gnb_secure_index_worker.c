@@ -726,8 +726,8 @@ static void* thread_worker_func( void *data ) {
         sync_index_node(gnb_index_worker);
 next:
         GNB_SLEEP_MILLISECOND(150);
-
     } while(gnb_index_worker->thread_worker_flag);
+    gnb_index_worker->thread_worker_run_flag = 0;
     return NULL;
 }
 
