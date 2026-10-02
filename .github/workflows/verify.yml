@@ -27,21 +27,28 @@ concurrency:
 jobs:
   tooling-lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout tooling
         uses: actions/checkout@v4
 
       - name: Install lint dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
+        # apt 默认对 dpkg 锁和镜像连接都不设超时，撞上就是无声挂到 job 默认 6 小时；
+        # 参数与成因见 build_linux.yml 的 Install dependencies。
+        timeout-minutes: 10
+        run: |
+          APT_OPTS="-o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 -o Acquire::http::Timeout=20"
+          sudo apt-get $APT_OPTS update -qq </dev/null
+          sudo apt-get $APT_OPTS install -y shellcheck
 
       # check.sh 的 lint 含「脚本语法」和「补丁包索引一致性」。后者是硬约束：
-      # 漏登记一个补丁包，重基时就会静默丢功能。它现在因 packages/README.md 未登记
-      # p1-route-proxy 而红 —— 那是 A 段（补丁包索引）的活，不由发行侧代填。
+      # 漏登记一个补丁包，将来重基时就会静默丢功能。
       - name: Run tooling lint
         run: sh scripts/check.sh lint
 
   channel-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout tooling
         uses: actions/checkout@v4
@@ -50,7 +57,13 @@ jobs:
           fetch-depth: 0
 
       - name: Install build dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y build-essential
+        # apt 默认对 dpkg 锁和镜像连接都不设超时，撞上就是无声挂到 job 默认 6 小时；
+        # 参数与成因见 build_linux.yml 的 Install dependencies。
+        timeout-minutes: 10
+        run: |
+          APT_OPTS="-o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 -o Acquire::http::Timeout=20"
+          sudo apt-get $APT_OPTS update -qq </dev/null
+          sudo apt-get $APT_OPTS install -y build-essential
 
       - name: Test each buildable channel in its own exported tree
         run: |

@@ -24,6 +24,7 @@ concurrency:
 jobs:
   plan:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       channels: ${{ steps.pick.outputs.channels }}
     steps:
@@ -67,6 +68,8 @@ jobs:
     needs: plan
     name: Linux ${{ matrix.arch }} (${{ matrix.channel }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # 兜底：卡在任何没预料的地方也在分钟内失败并留日志，而不是 job 默认的 6 小时
     strategy:
       fail-fast: false
       matrix:
@@ -118,12 +121,21 @@ jobs:
           fi
 
       - name: Install dependencies
+        # apt 在这类 runner 上有两种「无限等」：dpkg 锁（镜像里的 unattended-upgrades
+        # 会长期占着）和镜像连接 stalled，两者默认都不超时。10-02 那轮 tag 全矩阵实测：
+        # 同一步对九个 arch 完全同构，8 条腿 38~62 秒跑完，armv7-softfp 那条 50+ 分钟没
+        # 结束 —— 卡的不是架构/工具链，是这台 runner。而 GH 在 job 结束前不落日志，
+        # 于是既出不了包也看不到卡在哪。下面三个 -o 把等待换成有上限的失败，
+        # timeout-minutes 再兜一层：几分钟内失败并留下可读日志，而不是占着 runner
+        # 到 job 默认的 6 小时。`</dev/null` 保证任何提示都直接失败而不是等输入。
+        timeout-minutes: 10
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config wget curl git ca-certificates xz-utils tar flex bison autoconf automake libtool texinfo gawk cmake ninja-build file
-          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf || true
-          sudo apt-get install -y gcc-mips-linux-gnu gcc-mipsel-linux-gnu gcc-mips64-linux-gnuabi64 gcc-mips64el-linux-gnuabi64 || true
-          sudo apt-get install -y gcc-riscv64-linux-gnu || true
+          APT_OPTS="-o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 -o Acquire::http::Timeout=20"
+          sudo apt-get $APT_OPTS update </dev/null
+          sudo apt-get $APT_OPTS install -y build-essential pkg-config wget curl git ca-certificates xz-utils tar flex bison autoconf automake libtool texinfo gawk cmake ninja-build file
+          sudo apt-get $APT_OPTS install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf || true
+          sudo apt-get $APT_OPTS install -y gcc-mips-linux-gnu gcc-mipsel-linux-gnu gcc-mips64-linux-gnuabi64 gcc-mips64el-linux-gnuabi64 || true
+          sudo apt-get $APT_OPTS install -y gcc-riscv64-linux-gnu || true
 
       # 只有 armv7-* 从 musl.cc 取工具链；其余 arch 用 Debian 的 glibc 交叉包
       # （沿用改造前的 libc 口径，本次改造不动它）。case 里的 mipsel/riscv64/arm64
@@ -137,7 +149,7 @@ jobs:
           case "${{ matrix.arch }}" in
             mipsel)
               if [ ! -d mipsel-linux-musl-cross ]; then
-                if wget -q https://musl.cc/mipsel-linux-musl-cross.tgz -O mipsel-linux-musl-cross.tgz; then
+                if wget -q -T 30 -t 3 https://musl.cc/mipsel-linux-musl-cross.tgz -O mipsel-linux-musl-cross.tgz; then
                   tar -xzf mipsel-linux-musl-cross.tgz && musl_available=true
                 else
                   echo "WARN: mipsel musl download failed, will use glibc cross-compiler"
@@ -211,7 +223,7 @@ jobs:
               ;;
             riscv64)
               if [ ! -d riscv64-linux-musl-cross ]; then
-                if wget -q https://musl.cc/riscv64-linux-musl-cross.tgz -O riscv64-linux-musl-cross.tgz; then
+                if wget -q -T 30 -t 3 https://musl.cc/riscv64-linux-musl-cross.tgz -O riscv64-linux-musl-cross.tgz; then
                   tar -xzf riscv64-linux-musl-cross.tgz && musl_available=true
                 else
                   echo "WARN: riscv64 musl download failed, will use glibc cross-compiler"
@@ -254,7 +266,7 @@ jobs:
             arm64)
               # 为 arm64 添加 musl 工具链支持以确保静态链接
               if [ ! -d aarch64-linux-musl-cross ]; then
-                if wget -q https://musl.cc/aarch64-linux-musl-cross.tgz -O aarch64-linux-musl-cross.tgz; then
+                if wget -q -T 30 -t 3 https://musl.cc/aarch64-linux-musl-cross.tgz -O aarch64-linux-musl-cross.tgz; then
                   tar -xzf aarch64-linux-musl-cross.tgz && musl_available=true
                   echo "aarch64-linux-musl-cross toolchain downloaded and extracted"
                 else
@@ -504,6 +516,7 @@ jobs:
       contents: write
       actions: read
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout tooling
         uses: actions/checkout@v4

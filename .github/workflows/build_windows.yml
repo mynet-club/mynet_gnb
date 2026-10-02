@@ -19,6 +19,7 @@ concurrency:
 jobs:
   plan:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       channels: ${{ steps.pick.outputs.channels }}
     steps:
@@ -58,6 +59,7 @@ jobs:
   build:
     needs: plan
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -81,9 +83,13 @@ jobs:
           fi
 
       - name: Install MinGW-w64 cross-compiler
+        # 三个 -o + `</dev/null` + timeout 都为了让 apt 卡死变成「几分钟内失败且留日志」，
+        # 而不是占着 runner 到 job 默认的 6 小时；成因见 build_linux.yml 的注释。
+        timeout-minutes: 10
         run: |
-          sudo apt-get update
-          sudo apt-get install -y mingw-w64
+          APT_OPTS="-o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 -o Acquire::http::Timeout=20"
+          sudo apt-get $APT_OPTS update </dev/null
+          sudo apt-get $APT_OPTS install -y mingw-w64
 
       # 交叉工具链用环境变量传给 make（gnb-dist.sh 在原样导出的发行源码树上跑 make -C <tree>）。
       # 不再 apply 补丁，也不再断言 src/src/gnb_proxy_conf.o —— 那是旧嵌套布局的补丁验证，
@@ -133,6 +139,7 @@ jobs:
       contents: write
       actions: read
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 

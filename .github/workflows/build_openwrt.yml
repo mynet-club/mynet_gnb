@@ -23,6 +23,7 @@ concurrency:
 jobs:
   plan:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       channels: ${{ steps.pick.outputs.channels }}
     steps:
@@ -63,6 +64,7 @@ jobs:
     needs: plan
     name: OpenWrt ${{ matrix.arch }} (${{ matrix.channel }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -100,9 +102,13 @@ jobs:
           fi
 
       - name: Install build dependencies
+        # 三个 -o + `</dev/null` + timeout 都为了让 apt 卡死变成「几分钟内失败且留日志」，
+        # 而不是占着 runner 到 job 默认的 6 小时；成因见 build_linux.yml 的注释。
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y build-essential wget zstd tar file
+          APT_OPTS="-o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 -o Acquire::http::Timeout=20"
+          sudo apt-get $APT_OPTS update -qq </dev/null
+          sudo apt-get $APT_OPTS install -y build-essential wget zstd tar file
 
       # arch → OpenWrt SDK profile（target 目录、SDK 包名、libc 后缀、包架构名）
       - name: Resolve SDK profile for ${{ matrix.arch }}
@@ -138,7 +144,7 @@ jobs:
           SDK_FILE="openwrt-sdk-${{ env.SDK_VERSION }}-${{ steps.sdk.outputs.sdk_name }}_gcc-${{ env.SDK_GCC }}_${{ steps.sdk.outputs.sdk_libc }}.Linux-x86_64.tar.zst"
           SDK_URL="https://downloads.openwrt.org/releases/${{ env.SDK_VERSION }}/targets/${{ steps.sdk.outputs.sdk_target }}/${SDK_FILE}"
           echo "Downloading SDK: $SDK_URL"
-          wget -q --show-progress -O "/tmp/${SDK_FILE}" "$SDK_URL"
+          wget -q --show-progress -T 30 -t 3 -O "/tmp/${SDK_FILE}" "$SDK_URL"
           mkdir -p "/opt/openwrt-sdk/${{ env.SDK_VERSION }}"
           cd "/opt/openwrt-sdk/${{ env.SDK_VERSION }}"
           tar --use-compress-program=unzstd -xf "/tmp/${SDK_FILE}"
@@ -203,7 +209,7 @@ jobs:
           ipk="$hits"
           dest="$RUNNER_TEMP/zlib-$arch"
           rm -rf "$dest"; mkdir -p "$dest"
-          curl -fsSL -o "$RUNNER_TEMP/$ipk" "$base/$ipk"
+          curl -fsSL --max-time 300 -o "$RUNNER_TEMP/$ipk" "$base/$ipk"
           # ipk 是两层结构：外层 tar 里装 debian-binary/control.tar.gz/data.tar.gz，
           # 内层 data.tar.gz 才装 ./usr/lib/libz.a。成员名一律带 ./ 前缀，而 GNU tar
           # 解包默认 --anchored，用裸名 data.tar.gz 点成员会报 "Not found in archive"
@@ -268,6 +274,7 @@ jobs:
       contents: write
       actions: read
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
