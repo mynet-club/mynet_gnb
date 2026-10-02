@@ -200,37 +200,18 @@ jobs:
           echo "internal  : $(ls .release/internal 2>/dev/null | tr '\n' ' ')"
 
 
-      - name: Generate and merge checksums
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Generate checksums
         run: |
+          set -euo pipefail
           cd .release/production
-          if [ -z "$(ls -A . 2>/dev/null)" ]; then
-            echo "本批没有生产通道产物，跳过 checksums 合并"; exit 0
+          if [ -z "$(ls -A *.tgz 2>/dev/null)" ]; then
+            echo "本批没有生产通道产物，跳过 checksums"; exit 0
           fi
-          # 生成本批次校验
-          sha256sum *.tgz > new_checksums.txt
-
-          # 尝试从 Release 下载已有 checksums.txt，合并（同文件名替换，新增追加）
-          TAG="${{ github.ref_name }}"
-          mkdir -p .existing
-          gh release download "$TAG" -p "checksums.txt" -D .existing/ \
-            --repo "${GITHUB_REPOSITORY}" 2>/dev/null || true
-
-          if [ -f .existing/checksums.txt ]; then
-            new_files=$(awk '{print $2}' new_checksums.txt)
-            while IFS= read -r line; do
-              fname=$(echo "$line" | awk '{print $2}')
-              if ! printf '%s\n' $new_files | grep -qxF "$fname"; then
-                echo "$line"
-              fi
-            done < .existing/checksums.txt > kept.txt
-            sort -k2 kept.txt new_checksums.txt > checksums.txt
-          else
-            sort -k2 new_checksums.txt > checksums.txt
-          fi
-          echo "=== Final checksums.txt ==="
-          cat checksums.txt
+          # 按平台命名，不共用 checksums.txt：四个 workflow 并发往同一个 Release 传同名文件
+          # 会撞（tag v1.6.8-dev 实测 HTTP 422 ReleaseAsset.name already exists），
+          # 合并式「下载-改-回传」还会静默丢条目。
+          sha256sum *.tgz > checksums-darwin.txt
+          cat checksums-darwin.txt
 
       - name: Create/Update GitHub Release (clobber same-name assets only)
         if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')

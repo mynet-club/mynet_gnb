@@ -177,7 +177,7 @@ jobs:
           echo "staging_dir=$STAGING_DIR" >> "$GITHUB_OUTPUT"
           echo "strip=$STRIP" >> "$GITHUB_OUTPUT"
 
-      # 上游新的 Makefile.openwrt 把 -lz 硬写进链接行（b1d4534 起），CFLAGS 里却只有
+      # 上游新的 Makefile.openwrt 把 -lz 硬写进链接行（作者快照起），CFLAGS 里却只有
       # -I./libs —— 编译期吃的是仓内 vendored 的 libs/zlib/zlib.h，链接期要的是外部 libz，
       # 口径本身是分裂的。zlib 也不是空转：src/packet_filter/gnb_pf_zip.o 就在
       # Makefile.openwrt.inc:59 的 PF 对象表里，deflate/inflate 真用 z_stream；
@@ -315,43 +315,23 @@ jobs:
           echo "production: $(ls .release/production 2>/dev/null | tr '\n' ' ')"
           echo "internal  : $(ls .release/internal 2>/dev/null | tr '\n' ' ')"
 
-      - name: Generate and merge checksums
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Generate checksums
         run: |
+          set -euo pipefail
           cd .release/production
           if [ -z "$(ls -A *.tgz 2>/dev/null)" ]; then
             echo "本批没有生产通道产物，跳过 checksums"; exit 0
           fi
-          # 生成本批次校验
-          sha256sum *.tgz > new_checksums.txt
-
-          # 尝试从 Release 下载已有 checksums.txt，合并（同文件名替换，新增追加）
-          TAG="${{ github.ref_name }}"
-          mkdir -p .existing
-          gh release download "$TAG" -p "checksums.txt" -D .existing/ \
-            --repo "${GITHUB_REPOSITORY}" 2>/dev/null || true
-
-          if [ -f .existing/checksums.txt ]; then
-            new_files=$(awk '{print $2}' new_checksums.txt)
-            while IFS= read -r line; do
-              fname=$(echo "$line" | awk '{print $2}')
-              if ! printf '%s\n' $new_files | grep -qxF "$fname"; then
-                echo "$line"
-              fi
-            done < .existing/checksums.txt > kept.txt
-            sort -k2 kept.txt new_checksums.txt > checksums.txt
-          else
-            sort -k2 new_checksums.txt > checksums.txt
-          fi
-          echo "=== Final checksums.txt ==="
-          cat checksums.txt
+          # 按平台命名，不共用 checksums.txt：四个 workflow 并发往同一个 Release 传同名文件
+          # 会撞（tag v1.6.8-dev 实测 HTTP 422 ReleaseAsset.name already exists）。
+          sha256sum *.tgz > checksums-openwrt.txt
+          cat checksums-openwrt.txt
 
       - name: Upload checksums artifact
         uses: actions/upload-artifact@v4
         with:
           name: checksums-openwrt
-          path: .release/production/checksums.txt
+          path: .release/production/checksums-openwrt.txt
 
       # 旧版这一格写的是 upload-artifact，OpenWrt 的 tgz 其实从没进过 GitHub Release，
       # 也从没进下载目录 —— 设备上按 URL 取包就一直缺 OpenWrt。这里补成真正的发行。

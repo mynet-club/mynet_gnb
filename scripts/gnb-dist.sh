@@ -170,7 +170,9 @@ if ! _git_err=$(git rev-parse --verify "${RELEASE_SOURCE_COMMIT}^{commit}" 2>&1)
        git 说: $_git_err
        仓库: $(git rev-parse --git-dir 2>&1) / $(git --version 2>&1)"
 fi
-git archive "$RELEASE_SOURCE_COMMIT" | tar -x -C "$WORK"
+# `-f -` 是必需的：BSD tar（OpenBSD/FreeBSD）在没有 -f 时默认读 /dev/rst0，
+# 管道会直接失败（实测 OpenBSD：tar: Failed open to read on /dev/rst0）。
+git archive "$RELEASE_SOURCE_COMMIT" | tar -xf - -C "$WORK"
 if [ ! -f "$WORK/$MF" ]; then
     die "导出树缺 $MF —— 该提交不是可构建的根布局"
 fi
@@ -383,7 +385,7 @@ if [ "$MAKE_ARCHIVE" -eq 1 ]; then
     #     {name}_{platform}_{arch}_{version}.{ext}
     #   —— ReleaseDomainService::parseFilename 是严格正则，多插一段会让下载记录
     #      解析失败（静默 SKIP），通道信息在包内 MANIFEST 与产物目录名里。
-    #   internal（x-dev-patched）在 arch 与 version 之间插通道名：arch 段
+    #   internal（publish 非 production 的通道）在 arch 与 version 之间插通道名：arch 段
     #     [a-z0-9-]+ 不含下划线，这类包在 ctl 侧必然解析失败而被跳过 —— 这正是
     #     「开发包不能进生产下载目录、也不能覆盖生产包」的强制形式（计划§8C）。
     if [ "$PUBLISH" = "production" ]; then

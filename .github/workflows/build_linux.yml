@@ -555,40 +555,20 @@ jobs:
           echo "production: $(ls .release/production 2>/dev/null | tr '\n' ' ')"
           echo "internal  : $(ls .release/internal 2>/dev/null | tr '\n' ' ')"
 
-      # 同一个 tag 由多个 workflow 分别发包，所以先取 Release 上已有的 checksums.txt，
-      # 同文件名替换、其余保留。中间文件放 mktemp 目录，免得 new_*/kept*/.existing
-      # 混进 production/ 被 rsync 一起传到下载服务器。
-      - name: Generate and merge checksums
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # 校验文件按平台命名（checksums-<平台>.txt），不共用一个 checksums.txt。
+      - name: Generate checksums
         run: |
           set -euo pipefail
           cd .release/production
           if [ -z "$(ls -A *.tgz 2>/dev/null)" ]; then
-            echo "本批没有生产通道产物，跳过 checksums 合并"; exit 0
+            echo "本批没有生产通道产物，跳过 checksums"; exit 0
           fi
-          _tmp="$(mktemp -d)"
-          trap 'rm -rf "$_tmp"' EXIT
-          sha256sum *.tgz > "$_tmp/new_checksums.txt"
-
-          TAG="${{ github.ref_name }}"
-          gh release download "$TAG" -p "checksums.txt" -D "$_tmp" \
-            --repo "${GITHUB_REPOSITORY}" 2>/dev/null || true
-
-          if [ -f "$_tmp/checksums.txt" ]; then
-            new_files=$(awk '{print $2}' "$_tmp/new_checksums.txt")
-            while IFS= read -r line; do
-              fname=$(echo "$line" | awk '{print $2}')
-              if ! printf '%s\n' $new_files | grep -qxF "$fname"; then
-                echo "$line"
-              fi
-            done < "$_tmp/checksums.txt" > "$_tmp/kept.txt"
-            sort -k2 "$_tmp/kept.txt" "$_tmp/new_checksums.txt" > checksums.txt
-          else
-            sort -k2 "$_tmp/new_checksums.txt" > checksums.txt
-          fi
-          echo "=== Final checksums.txt ==="
-          cat checksums.txt
+          # 每个平台一个校验文件，不共用 checksums.txt：darwin/linux/openwrt/windows 四个
+          # workflow 会同时往同一个 Release 传这个同名文件（tag v1.6.8-dev 实测
+          # HTTP 422 ReleaseAsset.name already exists），而「下载-合并-回传」是读-改-写，
+          # 并发下会静默丢条目。校验文件按平台命名就没有竞争，也不需要 gh 凭据。
+          sha256sum *.tgz > checksums-linux.txt
+          cat checksums-linux.txt
 
       - name: Create/Update GitHub Release (clobber same-name assets only)
         if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
@@ -601,7 +581,7 @@ jobs:
           shopt -s nullglob
           TAG="${{ github.ref_name }}"
           # 开发通道产物也进 GitHub Release（内部可取），但下面 rsync 只发生产包。
-          # production/ 里除 tgz 还有刚合并的 checksums.txt，一并作为 Release 资产。
+          # production/ 里除 tgz 还有本平台的 checksums-linux.txt，一并作为 Release 资产。
           FILES=(.release/production/* .release/internal/*)
           if [ ${#FILES[@]} -eq 0 ]; then echo "无产物可发布"; exit 0; fi
           echo "Publishing release assets for $TAG: ${FILES[*]}"

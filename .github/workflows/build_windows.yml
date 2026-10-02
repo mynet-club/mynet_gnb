@@ -182,11 +182,15 @@ jobs:
 
       - name: Generate checksums
         run: |
+          set -euo pipefail
           cd .release/production
           if [ -z "$(ls -A *.tgz 2>/dev/null)" ]; then
             echo "本批没有生产通道产物，跳过 checksums"; exit 0
           fi
-          sha256sum $(ls | grep -v '^checksums.txt$') > checksums.txt
+          # 按平台命名，不共用 checksums.txt：四个 workflow 并发往同一个 Release 传同名文件
+          # 会撞（tag v1.6.8-dev 实测 HTTP 422 ReleaseAsset.name already exists）。
+          sha256sum *.tgz > checksums-windows.txt
+          cat checksums-windows.txt
 
       - name: Create/Update GitHub Release (clobber same-name assets only)
         if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')

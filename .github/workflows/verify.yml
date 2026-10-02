@@ -13,7 +13,7 @@ on:
   pull_request:
   push:
     branches:
-      # 主线就是发行线（b1d4534 → ffdf816 → 工具），所以守护跟着它跑。
+      # 主线就是发行线（基线提交 98f8b4e → 发行提交 e0228d9 → 工具），所以守护跟着它跑。
       # dev-2026-01 是换基前的旧线，那份 SSOT 还是三通道口径，在这里跑必然红。
       - main
 
@@ -87,12 +87,12 @@ jobs:
             fi
             echo "::group::$ch ($sha)"
             work="$(mktemp -d)"
-            if ! git archive "$sha" | tar -x -C "$work"; then
+            if ! git archive "$sha" | tar -xf - -C "$work"; then
               echo "错误: 导出 $sha 失败"
               rm -rf "$work"; failed="$failed $ch"; row "$ch" "${sha:0:7}" "✗ 导出失败"
               echo "::endgroup::"; continue
             fi
-            # 发行提交是**纯源码树**（b1d4534 → ffdf816 只有作者面加我们的 proxy），
+            # 发行提交是**纯源码树**（98f8b4e → e0228d9 只有作者源码加我们的 proxy），
             # 单测目录在工具树的 packages/ 里。把它按原来的相对路径放回导出树，
             # tests/Makefile 的 ../../../.. 才指向出厂那份字节；否则测的是工作区当前 src/。
             # ⚠️ 这里不能用 find 探目录：`find` 在缺目录时退出码非 0，而这个 step 跑在
