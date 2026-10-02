@@ -62,13 +62,14 @@ jobs:
 
   build:
     needs: plan
+    name: macOS ${{ matrix.arch }} (${{ matrix.channel }})
     strategy:
       fail-fast: false
       matrix:
         channel: ${{ fromJSON(needs.plan.outputs.channels) }}
-        include:
-          - { arch: amd64, cc: "clang -arch x86_64" }
-          - { arch: arm64, cc: "clang -arch arm64"  }
+        # arch 必须是真正的矩阵轴。写成 matrix.include 的独立条目时，GitHub 只把
+        # 最后一条并进组合（上一版因此只出了 arm64，x86_64 静默缺席）。
+        arch: [amd64, arm64]
 
     runs-on: macos-latest
 
@@ -103,11 +104,22 @@ jobs:
             brew install cmake || true
           fi
 
+      # 每个架构用同一台 mac runner 上的 universal clang，靠 -arch 选目标。
+      - name: Resolve compiler for ${{ matrix.arch }}
+        id: cc
+        run: |
+          set -euo pipefail
+          case '${{ matrix.arch }}' in
+            amd64) echo 'cc=clang -arch x86_64' >> "$GITHUB_OUTPUT" ;;
+            arm64) echo 'cc=clang -arch arm64'  >> "$GITHUB_OUTPUT" ;;
+            *) echo "macOS 矩阵里没有 '${{ matrix.arch }}' 的编译器口径" >&2; exit 1 ;;
+          esac
+
       # 不 apply 补丁、不插 Features 行：构建树由 gnb-dist.sh 从
       # packages/RELEASE-SOURCES 指定的固定发行源码提交 git archive 出来。
       # 产物落进 .pkg/<tag>/<publish 类>/，类由 SSOT 的 publish 字段决定，
       # 下游按目录分类，不靠包名猜（包名模式无法区分两类）。
-      - name: Build and package (${{ matrix.channel }})
+      - name: Build and package (${{ matrix.channel }} / ${{ matrix.arch }})
         run: |
           set -euo pipefail
           PUBLISH="$(sh scripts/release-sources.sh require '${{ matrix.channel }}' publish)"
@@ -116,7 +128,7 @@ jobs:
             --os darwin \
             --arch '${{ matrix.arch }}' \
             --tag "${{ steps.tag.outputs.tag }}" \
-            --make-var "CC=${{ matrix.cc }}" \
+            --make-var "CC=${{ steps.cc.outputs.cc }}" \
             --strip-cmd strip \
             --archive \
             --dist-dir ".pkg/${{ steps.tag.outputs.tag }}/$PUBLISH"
@@ -146,15 +158,29 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p .release/production .release/internal
-          moved=0
-          for cls in production internal; do
-            for ch in $(sh scripts/release-sources.sh channels "$cls"); do
-              for d in .release/gnb-"$ch"-*/; do
-                [ -d "$d" ] || continue
-                find "$d" -maxdepth 1 -type f -name '*.tgz' -exec mv -t .release/"$cls"/ {} +
-                moved=$((moved+1))
-              done
+          # 通道名互为前缀（main / main-patched），不能拿 gnb-<channel>-* 做模式匹配：
+          # 那会让 main 把 main-patched 的产物按 main 的类别搬走。这里对每个产物目录取
+          # 「匹配得上的最长通道名」，类别一律回 SSOT 的 publish 字段查。
+          for d in .release/*/; do
+            name="$(basename "$d")"
+            case "$name" in
+              production|internal) continue ;;
+              gnb-*) : ;;
+              *) continue ;;
+            esac
+            ch=""
+            for c in $(sh scripts/release-sources.sh channels all); do
+              case "$name" in "gnb-$c-"*) [ "${#c}" -gt "${#ch}" ] && ch="$c" ;; esac
             done
+            if [ -z "$ch" ]; then
+              echo "产物目录 $name 对不上任何已登记通道，拒绝静默发行" >&2
+              exit 1
+            fi
+            cls="$(sh scripts/release-sources.sh require "$ch" publish)"
+            # download-artifact@v4 保留了上传时的相对路径，tgz 其实在 <类>/ 子目录里，
+            # 所以 find 不限深度；归类只认目录名对应的通道，不认这个子目录名。
+            find "$d" -type f -name '*.tgz' -exec mv -t .release/"$cls"/ {} +
+            rm -rf "$d"
           done
           _left=$(find .release -type f -name '*.tgz' \
                     -not -path '.release/production/*' -not -path '.release/internal/*' | wc -l | tr -d ' ')

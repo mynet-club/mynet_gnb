@@ -61,20 +61,18 @@ jobs:
 
   build:
     needs: plan
+    name: OpenWrt ${{ matrix.arch }} (${{ matrix.channel }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         channel: ${{ fromJSON(needs.plan.outputs.channels) }}
-        include:
-          - { arch: arm64,     sdk_target: armsr/armv8,      sdk_name: armsr-armv8,      sdk_libc: musl     }
-          - { arch: amd64,     sdk_target: x86/64,           sdk_name: x86-64,           sdk_libc: musl     }
-          - { arch: mipsel,    sdk_target: ramips/mt7621,    sdk_name: ramips-mt7621,    sdk_libc: musl     }   # hard-float
-          - { arch: mipsel-sf, sdk_target: ramips/mt7620,    sdk_name: ramips-mt7620,    sdk_libc: musl     }   # soft-float (MT7620 等无 FPU 设备)
-          - { arch: mips,      sdk_target: ath79/generic,    sdk_name: ath79-generic,    sdk_libc: musl     }   # soft-float (AR71xx/AR9xxx 无 FPU)
-          - { arch: armv7,     sdk_target: bcm27xx/bcm2709,  sdk_name: bcm27xx-bcm2709,  sdk_libc: musl_eabi }  # hard-float
-          # armv7-sf (mxs/generic) 暂时注释：i.MX28 等无 VFP 设备较罕见，且 OpenWrt 24.10 可能已放弃该 target
-          # - { arch: armv7-sf, sdk_target: mxs/generic, sdk_name: mxs-generic, sdk_libc: musl }
+        # arch 必须是真正的矩阵轴。写成 matrix.include 的独立条目时，GitHub 只把
+        # 最后一条并进组合（上一版因此只出了 armv7，其余五个 target 静默缺席）。
+        # 每个 arch 对应的 SDK profile 见下面的 Resolve SDK profile 步骤。
+        # armv7-sf (mxs/generic) 未列入：i.MX28 等无 VFP 设备较罕见，且 OpenWrt 24.10
+        # 可能已放弃该 target。
+        arch: [arm64, amd64, mipsel, mipsel-sf, mips, armv7]
 
     steps:
       - name: Free disk space
@@ -106,18 +104,38 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y build-essential wget zstd tar file
 
+      # arch → OpenWrt SDK profile（target 目录、SDK 包名、libc 后缀）
+      - name: Resolve SDK profile for ${{ matrix.arch }}
+        id: sdk
+        run: |
+          set -euo pipefail
+          case '${{ matrix.arch }}' in
+            arm64)     p='armsr/armv8     armsr-armv8      musl'     ;;
+            amd64)     p='x86/64          x86-64           musl'     ;;
+            mipsel)    p='ramips/mt7621   ramips-mt7621    musl'     ;;   # hard-float
+            mipsel-sf) p='ramips/mt7620   ramips-mt7620    musl'     ;;   # soft-float (MT7620 等无 FPU)
+            mips)      p='ath79/generic   ath79-generic    musl'     ;;   # soft-float (AR71xx/AR9xxx)
+            armv7)     p='bcm27xx/bcm2709 bcm27xx-bcm2709  musl_eabi' ;;  # hard-float
+            *) echo "OpenWrt 矩阵里没有 '${{ matrix.arch }}' 这个 target" >&2; exit 1 ;;
+          esac
+          # shellcheck disable=SC2086  # 固定三列，按空白切开即可
+          set -- $p
+          echo "sdk_target=$1" >> "$GITHUB_OUTPUT"
+          echo "sdk_name=$2"   >> "$GITHUB_OUTPUT"
+          echo "sdk_libc=$3"   >> "$GITHUB_OUTPUT"
+
       - name: Cache OpenWrt SDK ${{ env.SDK_VERSION }} / ${{ matrix.arch }}
         id: sdk_cache
         uses: actions/cache@v4
         with:
-          path: /opt/openwrt-sdk/${{ env.SDK_VERSION }}/${{ matrix.sdk_name }}
-          key: openwrt-sdk-${{ env.SDK_VERSION }}-${{ matrix.sdk_name }}-gcc${{ env.SDK_GCC }}-v1
+          path: /opt/openwrt-sdk/${{ env.SDK_VERSION }}/${{ steps.sdk.outputs.sdk_name }}
+          key: openwrt-sdk-${{ env.SDK_VERSION }}-${{ steps.sdk.outputs.sdk_name }}-gcc${{ env.SDK_GCC }}-v1
 
       - name: Download and extract OpenWrt SDK
         if: steps.sdk_cache.outputs.cache-hit != 'true'
         run: |
-          SDK_FILE="openwrt-sdk-${{ env.SDK_VERSION }}-${{ matrix.sdk_name }}_gcc-${{ env.SDK_GCC }}_${{ matrix.sdk_libc }}.Linux-x86_64.tar.zst"
-          SDK_URL="https://downloads.openwrt.org/releases/${{ env.SDK_VERSION }}/targets/${{ matrix.sdk_target }}/${SDK_FILE}"
+          SDK_FILE="openwrt-sdk-${{ env.SDK_VERSION }}-${{ steps.sdk.outputs.sdk_name }}_gcc-${{ env.SDK_GCC }}_${{ steps.sdk.outputs.sdk_libc }}.Linux-x86_64.tar.zst"
+          SDK_URL="https://downloads.openwrt.org/releases/${{ env.SDK_VERSION }}/targets/${{ steps.sdk.outputs.sdk_target }}/${SDK_FILE}"
           echo "Downloading SDK: $SDK_URL"
           wget -q --show-progress -O "/tmp/${SDK_FILE}" "$SDK_URL"
           mkdir -p "/opt/openwrt-sdk/${{ env.SDK_VERSION }}"
@@ -130,14 +148,14 @@ jobs:
             ls -la
             exit 1
           fi
-          mv "$EXTRACTED" "${{ matrix.sdk_name }}"
+          mv "$EXTRACTED" "${{ steps.sdk.outputs.sdk_name }}"
           rm -f "/tmp/${SDK_FILE}"
-          echo "SDK ready at: /opt/openwrt-sdk/${{ env.SDK_VERSION }}/${{ matrix.sdk_name }}"
+          echo "SDK ready at: /opt/openwrt-sdk/${{ env.SDK_VERSION }}/${{ steps.sdk.outputs.sdk_name }}"
 
       - name: Find SDK toolchain GCC
         id: toolchain
         run: |
-          SDK_DIR="/opt/openwrt-sdk/${{ env.SDK_VERSION }}/${{ matrix.sdk_name }}"
+          SDK_DIR="/opt/openwrt-sdk/${{ env.SDK_VERSION }}/${{ steps.sdk.outputs.sdk_name }}"
           echo "SDK_DIR: $SDK_DIR"
           echo "Toolchain dirs:"
           ls "$SDK_DIR/staging_dir/" | grep toolchain || echo "(none)"
@@ -161,7 +179,7 @@ jobs:
       # 不 apply 补丁：gnb-dist.sh 从 packages/RELEASE-SOURCES 指定的固定提交导出源码树，
       # 校验源码身份 → make → 校验四程序与能力输出 → MANIFEST/SHA256SUMS → tgz（包名带通道段
       # 与否由 publish 类决定）。SDK 工具链通过 --make-var / 环境变量传入。
-      - name: Build and package (${{ matrix.channel }})
+      - name: Build and package (${{ matrix.channel }} / ${{ matrix.arch }})
         env:
           STAGING_DIR: ${{ steps.toolchain.outputs.staging_dir }}
         run: |
@@ -211,13 +229,29 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p .release/production .release/internal
-          for cls in production internal; do
-            for ch in $(sh scripts/release-sources.sh channels "$cls"); do
-              for d in .release/gnb-"$ch"-*/; do
-                [ -d "$d" ] || continue
-                find "$d" -maxdepth 1 -type f -name '*.tgz' -exec mv -t .release/"$cls"/ {} +
-              done
+          # 通道名互为前缀（main / main-patched），不能拿 gnb-<channel>-* 做模式匹配：
+          # 那会让 main 把 main-patched 的产物按 main 的类别搬走。这里对每个产物目录取
+          # 「匹配得上的最长通道名」，类别一律回 SSOT 的 publish 字段查。
+          for d in .release/*/; do
+            name="$(basename "$d")"
+            case "$name" in
+              production|internal) continue ;;
+              gnb-*) : ;;
+              *) continue ;;
+            esac
+            ch=""
+            for c in $(sh scripts/release-sources.sh channels all); do
+              case "$name" in "gnb-$c-"*) [ "${#c}" -gt "${#ch}" ] && ch="$c" ;; esac
             done
+            if [ -z "$ch" ]; then
+              echo "产物目录 $name 对不上任何已登记通道，拒绝静默发行" >&2
+              exit 1
+            fi
+            cls="$(sh scripts/release-sources.sh require "$ch" publish)"
+            # download-artifact@v4 保留了上传时的相对路径，tgz 其实在 <类>/ 子目录里，
+            # 所以 find 不限深度；归类只认目录名对应的通道，不认这个子目录名。
+            find "$d" -type f -name '*.tgz' -exec mv -t .release/"$cls"/ {} +
+            rm -rf "$d"
           done
           _left=$(find .release -type f -name '*.tgz' \
                     -not -path '.release/production/*' -not -path '.release/internal/*' | wc -l | tr -d ' ')
