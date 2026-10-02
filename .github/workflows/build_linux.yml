@@ -1,0 +1,592 @@
+name: Build GNB For Linux
+
+# OpenWrt 产物由 build_openwrt.yml（官方 SDK 24.10）负责，本文件只出 Linux 交叉产物。
+# 这里不打补丁：构建树由 scripts/gnb-dist.sh 从 packages/RELEASE-SOURCES 里该通道的
+# 固定发行源码提交 git archive 导出，源码身份不符就直接失败。
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*.*.*"
+
+env:
+  PROJECT: gnb
+  BASE_URL: "https://download.mynet.club/gnb"
+  # 想出的通道。未指定发行源码提交的通道会被 plan job 标为 skipped 并写进 summary，
+  # 补丁/源码准备线在 packages/RELEASE-SOURCES 填上 commit 后，它自动进入矩阵。
+  CHANNELS: main,main-patched
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      channels: ${{ steps.pick.outputs.channels }}
+    steps:
+      - name: Checkout tooling
+        uses: actions/checkout@v4
+        with:
+          # 发行源码提交是历史里的固定提交，脚本要能 git archive 它们
+          fetch-depth: 0
+
+      - name: Pick buildable channels
+        id: pick
+        run: |
+          set -euo pipefail
+          buildable=""
+          skipped=""
+          IFS=',' read -r -a list <<< "${{ env.CHANNELS }}"
+          for ch in "${list[@]}"; do
+            ch="$(printf '%s' "$ch" | tr -d ' ')"
+            [ -n "$ch" ] || continue
+            if sh scripts/release-sources.sh require "$ch" release_source_commit >/dev/null 2>&1; then
+              buildable="${buildable}\"$ch\","
+            else
+              skipped="$skipped $ch"
+            fi
+          done
+          if [ -z "$buildable" ]; then
+            echo "没有通道的发行源码提交被指定（CHANNELS=${{ env.CHANNELS }}）—— 不发空产物。" >&2
+            echo "请由补丁/源码准备线在 packages/RELEASE-SOURCES 固定 release_source_commit。" >&2
+            exit 1
+          fi
+          echo "channels=[${buildable%,}]" >> "$GITHUB_OUTPUT"
+          {
+            echo "## 通道取舍（Linux）"
+            echo "- 构建: $(printf '%s' "$buildable" | tr -d '\"')"
+            if [ -n "$skipped" ]; then
+              echo "- **跳过**:$skipped —— packages/RELEASE-SOURCES 里 release_source_commit 仍为 UNSET"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        channel: ${{ fromJSON(needs.plan.outputs.channels) }}
+        include:
+          - { arch: amd64,        }
+          - { arch: arm64,        }
+          - { arch: armv7-softfp, }
+          - { arch: armv7-hardfp, }
+          - { arch: mips,         }
+          - { arch: mipsel,       }
+          - { arch: mips64,       }
+          - { arch: mips64el,     }
+          - { arch: riscv64,      }
+
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+            "$AGENT_TOOLSDIRECTORY" || true
+          df -h
+
+      - name: Checkout tooling
+        uses: actions/checkout@v4
+        with:
+          # 固定发行源码提交要在历史里能 git archive 出来
+          fetch-depth: 0
+
+      - name: Resolve release tag
+        id: tag
+        run: |
+          set -euo pipefail
+          REF="${GITHUB_REF_NAME}"
+          # workflow_dispatch 时 ref 是分支名（含 /），不能当包名版本号用
+          if printf '%s' "$REF" | grep -qE '^v[0-9][0-9A-Za-z.-]*$'; then
+            echo "tag=$REF" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=v$(cat version)-g$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config wget curl git ca-certificates xz-utils tar flex bison autoconf automake libtool texinfo gawk cmake ninja-build file
+          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf || true
+          sudo apt-get install -y gcc-mips-linux-gnu gcc-mipsel-linux-gnu gcc-mips64-linux-gnuabi64 gcc-mips64el-linux-gnuabi64 || true
+          sudo apt-get install -y gcc-riscv64-linux-gnu || true
+
+      # 只有 armv7-* 从 musl.cc 取工具链；其余 arch 用 Debian 的 glibc 交叉包
+      # （沿用改造前的 libc 口径，本次改造不动它）。case 里的 mipsel/riscv64/arm64
+      # 分支留着，把上面的门控放宽就能启用。
+      - name: Setup musl / special toolchain
+        if: matrix.arch == 'armv7-softfp' || matrix.arch == 'armv7-hardfp'
+        run: |
+          set -e
+          cd /tmp
+          musl_available=false
+          case "${{ matrix.arch }}" in
+            mipsel)
+              if [ ! -d mipsel-linux-musl-cross ]; then
+                if wget -q https://musl.cc/mipsel-linux-musl-cross.tgz -O mipsel-linux-musl-cross.tgz; then
+                  tar -xzf mipsel-linux-musl-cross.tgz && musl_available=true
+                else
+                  echo "WARN: mipsel musl download failed, will use glibc cross-compiler"
+                fi
+              else
+                musl_available=true
+              fi
+              if [ "$musl_available" = "true" ] && [ -d mipsel-linux-musl-cross/bin ]; then
+                echo "/tmp/mipsel-linux-musl-cross/bin" >> $GITHUB_PATH
+                echo "MUSL_AVAILABLE=true" >> $GITHUB_ENV
+              fi
+              ;;
+            mipsel-muslsf)
+              musl_available=false
+              if [ ! -d mipsel-linux-muslsf-cross ]; then
+                echo "Trying to use local mipsel-muslsf toolchain from repository..."
+                # 本地工具链不入库（曾 102MB 导致 push 失败）；CI 优先 wget musl.cc
+                if [ -f "$GITHUB_WORKSPACE/.github/toolchains/mipsel-linux-muslsf-cross.tgz" ]; then
+                  echo "Found local toolchain, extracting..."
+                  cp "$GITHUB_WORKSPACE/.github/toolchains/mipsel-linux-muslsf-cross.tgz" .
+                  if tar -xzf mipsel-linux-muslsf-cross.tgz; then
+                    musl_available=true
+                    echo "Local toolchain extracted successfully"
+                  else
+                    echo "ERROR: Failed to extract local toolchain"
+                  fi
+                else
+                  echo "Local toolchain not found, downloading from musl.cc..."
+                  # 尝试3次下载
+                  for attempt in 1 2 3; do
+                    echo "Download attempt $attempt/3..."
+                    if wget --timeout=30 --tries=2 -q https://musl.cc/mipsel-linux-muslsf-cross.tgz -O mipsel-linux-muslsf-cross.tgz; then
+                      echo "Download successful, extracting..."
+                      if tar -xzf mipsel-linux-muslsf-cross.tgz; then
+                        musl_available=true
+                        echo "Downloaded toolchain extracted successfully"
+                        break
+                      else
+                        echo "ERROR: Failed to extract downloaded toolchain"
+                        rm -f mipsel-linux-muslsf-cross.tgz
+                      fi
+                    else
+                      echo "Download attempt $attempt failed"
+                      rm -f mipsel-linux-muslsf-cross.tgz
+                      if [ $attempt -lt 3 ]; then
+                        echo "Retrying in 5 seconds..."
+                        sleep 5
+                      fi
+                    fi
+                  done
+                fi
+
+                if [ "$musl_available" = "false" ]; then
+                  echo "ERROR: Both local and remote toolchain setup failed"
+                fi
+              else
+                musl_available=true
+                echo "mipsel-linux-muslsf-cross toolchain already exists"
+              fi
+              if [ "$musl_available" = "true" ] && [ -d mipsel-linux-muslsf-cross/bin ]; then
+                echo "/tmp/mipsel-linux-muslsf-cross/bin" >> $GITHUB_PATH
+                echo "MUSL_AVAILABLE=true" >> $GITHUB_ENV
+                echo "Added mipsel-linux-muslsf-cross/bin to PATH"
+                ls -la mipsel-linux-muslsf-cross/bin/ | head -5
+              else
+                echo "ERROR: mipsel-linux-muslsf-cross toolchain setup failed"
+                echo "musl_available=$musl_available"
+                echo "Directory check: $(ls -ld mipsel-linux-muslsf-cross 2>/dev/null || echo 'Not found')"
+                exit 1
+              fi
+              ;;
+            riscv64)
+              if [ ! -d riscv64-linux-musl-cross ]; then
+                if wget -q https://musl.cc/riscv64-linux-musl-cross.tgz -O riscv64-linux-musl-cross.tgz; then
+                  tar -xzf riscv64-linux-musl-cross.tgz && musl_available=true
+                else
+                  echo "WARN: riscv64 musl download failed, will use glibc cross-compiler"
+                fi
+              else
+                musl_available=true
+              fi
+              if [ "$musl_available" = "true" ] && [ -d riscv64-linux-musl-cross/bin ]; then
+                echo "/tmp/riscv64-linux-musl-cross/bin" >> $GITHUB_PATH
+                echo "MUSL_AVAILABLE=true" >> $GITHUB_ENV
+              fi
+              ;;
+            armv7-softfp|armv7-hardfp)
+              if [ ! -d arm-linux-musleabihf-cross ]; then
+                if wget -q https://musl.cc/arm-linux-musleabihf-cross.tgz -O arm-linux-musleabihf-cross.tgz; then
+                  tar -xzf arm-linux-musleabihf-cross.tgz && musl_available=true
+                else
+                  echo "WARN: arm-musleabihf musl download failed, will use glibc cross-compiler"
+                fi
+              else
+                musl_available=true
+              fi
+              if [ "$musl_available" = "true" ] && [ -d arm-linux-musleabihf-cross/bin ]; then
+                echo "/tmp/arm-linux-musleabihf-cross/bin" >> $GITHUB_PATH
+                echo "MUSL_AVAILABLE=true" >> $GITHUB_ENV
+              fi
+              ;;
+            amd64)
+              echo "No extra musl toolchain needed for native amd64"
+              ;;
+            arm64)
+              # 为 arm64 添加 musl 工具链支持以确保静态链接
+              if [ ! -d aarch64-linux-musl-cross ]; then
+                if wget -q https://musl.cc/aarch64-linux-musl-cross.tgz -O aarch64-linux-musl-cross.tgz; then
+                  tar -xzf aarch64-linux-musl-cross.tgz && musl_available=true
+                  echo "aarch64-linux-musl-cross toolchain downloaded and extracted"
+                else
+                  echo "WARN: aarch64-linux-musl musl download failed, will use glibc cross-compiler"
+                fi
+              else
+                musl_available=true
+              fi
+              if [ "$musl_available" = "true" ] && [ -d aarch64-linux-musl-cross/bin ]; then
+                echo "/tmp/aarch64-linux-musl-cross/bin" >> $GITHUB_PATH
+                echo "MUSL_AVAILABLE=true" >> $GITHUB_ENV
+                echo "Added aarch64-linux-musl-cross/bin to PATH"
+              fi
+              ;;
+            *) echo "No extra musl toolchain for ${{ matrix.arch }}";;
+          esac
+
+      - name: Setup cross compiler and static flags
+        run: |
+          # 确定是否使用静态链接
+          STATIC_LINKING=false
+          case "${{ matrix.arch }}" in
+            amd64)
+              export CC=gcc
+              # amd64 native可以使用静态链接
+              STATIC_LINKING=true
+              ;;
+            arm64)
+              if command -v aarch64-linux-musl-gcc >/dev/null 2>&1; then
+                export CC=aarch64-linux-musl-gcc
+                STATIC_LINKING=true  # musl支持静态链接
+                echo "Using musl toolchain for ${{ matrix.arch }}: aarch64-linux-musl-gcc"
+              else
+                export CC=aarch64-linux-gnu-gcc
+                STATIC_LINKING=true  # 尝试静态链接，即使使用glibc
+                echo "WARN: Using glibc toolchain for ${{ matrix.arch }}, static linking may fail"
+              fi
+              ;;
+            armv7-softfp|armv7-hardfp)
+              if command -v arm-linux-musleabihf-gcc >/dev/null 2>&1; then
+                export CC=arm-linux-musleabihf-gcc
+                STATIC_LINKING=true  # musl支持静态链接
+                echo "Using musl toolchain for ${{ matrix.arch }}: arm-linux-musleabihf-gcc"
+              else
+                export CC=arm-linux-gnueabihf-gcc
+                STATIC_LINKING=true  # 尝试静态链接，即使使用glibc
+                echo "WARN: Using glibc toolchain for ${{ matrix.arch }}, static linking may fail"
+              fi
+              ;;
+            mips)
+              export CC=mips-linux-gnu-gcc
+              # mips 也应该支持静态链接
+              STATIC_LINKING=true
+              ;;
+            mipsel)
+              if command -v mipsel-linux-musl-gcc >/dev/null 2>&1; then
+                export CC=mipsel-linux-musl-gcc
+                STATIC_LINKING=true  # musl支持静态链接
+                echo "Using musl toolchain for ${{ matrix.arch }}: mipsel-linux-musl-gcc"
+              else
+                export CC=mipsel-linux-gnu-gcc
+                echo "WARN: Using glibc toolchain for ${{ matrix.arch }}, static linking may fail"
+                STATIC_LINKING=true  # 尝试静态链接，即使使用glibc
+              fi
+              ;;
+            mipsel-muslsf)
+              echo "=== mipsel-muslsf toolchain check ==="
+              echo "PATH before toolchain check: $PATH"
+              echo "Checking for mipsel-linux-muslsf-gcc..."
+              which mipsel-linux-muslsf-gcc || echo "mipsel-linux-muslsf-gcc not found in PATH"
+              ls -la /tmp/mipsel-linux-muslsf-cross/bin/ 2>/dev/null || echo "Toolchain bin directory not found"
+
+              if command -v mipsel-linux-muslsf-gcc >/dev/null 2>&1; then
+                export CC=mipsel-linux-muslsf-gcc
+                STATIC_LINKING=true  # musl支持静态链接
+                echo "Using musl toolchain for ${{ matrix.arch }}: mipsel-linux-muslsf-gcc"
+                echo "Compiler version: $($CC --version | head -1)"
+              else
+                echo "ERROR: mipsel-muslsf requires mipsel-linux-muslsf-gcc but not found in PATH"
+                echo "Available gcc compilers in /tmp:"
+                find /tmp -name "*gcc*" 2>/dev/null | head -10 || echo "No gcc found in /tmp"
+                echo "Current PATH: $PATH"
+                echo "Contents of /tmp:"
+                ls -la /tmp/ | grep -E "(mipsel|muslsf)" || echo "No mipsel/muslsf directories found"
+                exit 1
+              fi
+              ;;
+            mips64)
+              export CC=mips64-linux-gnuabi64-gcc
+              # mips64 也应该支持静态链接
+              STATIC_LINKING=true
+              ;;
+            mips64el)
+              export CC=mips64el-linux-gnuabi64-gcc
+              # mips64el 也应该支持静态链接
+              STATIC_LINKING=true
+              ;;
+            riscv64)
+              if command -v riscv64-linux-musl-gcc >/dev/null 2>&1; then
+                export CC=riscv64-linux-musl-gcc
+                STATIC_LINKING=true  # musl支持静态链接
+                echo "Using musl toolchain for ${{ matrix.arch }}: riscv64-linux-musl-gcc"
+              else
+                export CC=riscv64-linux-gnu-gcc
+                echo "WARN: Using glibc toolchain for ${{ matrix.arch }}, static linking may fail"
+                STATIC_LINKING=true  # 尝试静态链接，即使使用glibc
+              fi
+              ;;
+          esac
+
+          export CXX=${CC/gcc/g++}
+          export AR=${CC/gcc/ar}
+          export RANLIB=${CC/gcc/ranlib}
+          # strip 用同工具链的那份：宿主 strip 对外来架构 ELF 不保证认
+          export STRIP=${CC/gcc/strip}
+
+          # 软/硬浮点平台的编译标志。Makefile.linux 的 GNB_CFLAGS 引用 $(CFLAGS)，
+          # 所以这两个走环境变量就生效；链接标志见 Build 步骤的 --make-var。
+          case "${{ matrix.arch }}" in
+            mipsel-muslsf)
+              export CFLAGS="-march=mips32r2 -mtune=mips32r2 -msoft-float"
+              export LDFLAGS="-msoft-float"
+              echo "Applied soft-float flags for mipsel-muslsf"
+              ;;
+            armv7-softfp)
+              export CFLAGS="-march=armv7-a -mfloat-abi=soft"
+              export LDFLAGS="-mfloat-abi=soft"
+              echo "Applied soft-float flags for armv7-softfp"
+              ;;
+            armv7-hardfp)
+              export CFLAGS="-march=armv7-a -mfloat-abi=hard -mfpu=vfpv3-d16"
+              export LDFLAGS="-mfloat-abi=hard"
+              echo "Applied hard-float flags for armv7-hardfp"
+              ;;
+          esac
+
+          echo "STATIC_LINKING=$STATIC_LINKING" >> $GITHUB_ENV
+          echo "CC=$CC" >> $GITHUB_ENV
+          echo "CXX=$CXX" >> $GITHUB_ENV
+          echo "AR=$AR" >> $GITHUB_ENV
+          echo "RANLIB=$RANLIB" >> $GITHUB_ENV
+          echo "STRIP=$STRIP" >> $GITHUB_ENV
+          echo "CFLAGS=${CFLAGS:-}" >> $GITHUB_ENV
+          echo "LDFLAGS=${LDFLAGS:-}" >> $GITHUB_ENV
+          echo "arch=${{ matrix.arch }} CC=$CC STRIP=$STRIP STATIC_LINKING=$STATIC_LINKING"
+          # STRIP 是否可用由 gnb-dist.sh 在构建前查（它拿到的是同一个值）
+
+      # 一条流水线做完：导出发行源码提交 → 校验源码身份 → make → 校验四程序与能力输出
+      # → strip → MANIFEST + SHA256SUMS → tgz。补丁和 Features 行都不在这里生成。
+      - name: Build and package (${{ matrix.channel }} / ${{ matrix.arch }})
+        shell: bash
+        run: |
+          set -euo pipefail
+          PUBLISH="$(sh scripts/release-sources.sh require '${{ matrix.channel }}' publish)"
+          args=(
+            --channel '${{ matrix.channel }}'
+            --os linux
+            --arch '${{ matrix.arch }}'
+            --tag "${{ steps.tag.outputs.tag }}"
+            --out ".out/${{ steps.tag.outputs.tag }}/${{ matrix.channel }}/${{ matrix.arch }}"
+            --strip-cmd "$STRIP"
+            --archive
+            --dist-dir ".pkg/${{ steps.tag.outputs.tag }}/$PUBLISH"
+          )
+          if [ -n "${CC:-}" ]; then
+            args+=( --make-var "CC=$CC" )
+          fi
+          # Makefile.linux 里 GNB_LDFLAGS / GNB_ES_LDFLAGS 是普通赋值：命令行给值会
+          # **整体替换**文件里的值，所以 -static 必须连非 DEBUG 基线
+          # （-Wl,--gc-sections -L/usr/lib -s）一起给全，否则 --gc-sections 和 -s 会丢。
+          # 基线漂移不会静默 —— 下一步逐二进制断言 statically linked。
+          # 旧写法传的 CLI_LDFLAGS 在本仓任何 Makefile 里都不存在，等于没生效，
+          # 结果只有 gnb_es 是静态的，gnb/gnb_ctl/gnb_crypto 一直动态链接 glibc。
+          if [ "${STATIC_LINKING:-false}" = "true" ]; then
+            args+=(
+              --make-var "GNB_LDFLAGS=-Wl,--gc-sections -L/usr/lib -static -s"
+              --make-var "GNB_ES_LDFLAGS=-Wl,--gc-sections -L/usr/lib -static -s"
+            )
+          fi
+          sh scripts/gnb-dist.sh "${args[@]}"
+
+      # 只读取证：strip 与校验和已在 gnb-dist.sh 里按正确顺序做完，这里不再动二进制，
+      # 只如实报出链接方式并与 STATIC_LINKING 的期望对齐。
+      # 期望静态却出动态 = 失败，而不是发一个名字号称通用、实际依赖宿主 glibc 的包。
+      - name: Verify linking type (read-only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=".out/${{ steps.tag.outputs.tag }}/${{ matrix.channel }}/${{ matrix.arch }}"
+          if [ ! -d "$OUT" ]; then echo "OUT missing: $OUT"; exit 1; fi
+          missing=0
+          for f in gnb_ctl gnb_es gnb_crypto gnb; do
+            if [ -f "$OUT/$f" ]; then
+              info=$(file -b "$OUT/$f")
+              size=$(stat -c%s "$OUT/$f")
+              echo "$f: $info (${size} bytes)"
+              if [ "${STATIC_LINKING:-false}" = "true" ]; then
+                if echo "$info" | grep -qi "statically linked\|static-pie linked"; then
+                  echo "  ✓ $f is static (as expected)"
+                else
+                  echo "  ERROR: $f is not static but static linking was enabled"; missing=1
+                fi
+              else
+                if echo "$info" | grep -qi "statically linked\|static-pie linked"; then
+                  echo "  ✓ $f is static (bonus)"
+                elif echo "$info" | grep -qi "dynamically linked"; then
+                  echo "  ✓ $f is dynamic (as expected)"
+                else
+                  echo "  ? $f linking status unknown: $info"
+                fi
+              fi
+            else
+              echo "  ERROR: binary $f not found in $OUT"; missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "有二进制缺失或链接类型与期望不符。" >&2
+            exit 1
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: gnb-${{ matrix.channel }}-linux-${{ matrix.arch }}
+          path: .pkg/${{ steps.tag.outputs.tag }}/*/*.tgz
+          if-no-files-found: error
+
+  publish:
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tooling
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: .release/
+
+      # 分类依据是产物目录名里的通道段 + packages/RELEASE-SOURCES 的 publish 字段：
+      # gnb-<channel>-linux-<arch> 里的 channel 是精确字符串，不做包名模式匹配
+      # （包名模式区分不了两类：gnb_*_v*.tgz 同样会匹配开发包名）。
+      - name: Split production vs internal artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p .release/production .release/internal
+          for cls in production internal; do
+            for ch in $(sh scripts/release-sources.sh channels "$cls"); do
+              for d in .release/gnb-"$ch"-*/; do
+                [ -d "$d" ] || continue
+                find "$d" -maxdepth 1 -type f -name '*.tgz' -exec mv -t .release/"$cls"/ {} +
+              done
+            done
+          done
+          _left=$(find .release -type f -name '*.tgz' \
+                    -not -path '.release/production/*' -not -path '.release/internal/*' | wc -l | tr -d ' ')
+          if [ "$_left" -ne 0 ]; then
+            echo "有 $((_left)) 个产物未归类，拒绝静默发行：" >&2
+            find .release -type f -name '*.tgz' \
+              -not -path '.release/production/*' -not -path '.release/internal/*' >&2
+            exit 1
+          fi
+          echo "production: $(ls .release/production 2>/dev/null | tr '\n' ' ')"
+          echo "internal  : $(ls .release/internal 2>/dev/null | tr '\n' ' ')"
+
+      # 同一个 tag 由多个 workflow 分别发包，所以先取 Release 上已有的 checksums.txt，
+      # 同文件名替换、其余保留。中间文件放 mktemp 目录，免得 new_*/kept*/.existing
+      # 混进 production/ 被 rsync 一起传到下载服务器。
+      - name: Generate and merge checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd .release/production
+          if [ -z "$(ls -A *.tgz 2>/dev/null)" ]; then
+            echo "本批没有生产通道产物，跳过 checksums 合并"; exit 0
+          fi
+          _tmp="$(mktemp -d)"
+          trap 'rm -rf "$_tmp"' EXIT
+          sha256sum *.tgz > "$_tmp/new_checksums.txt"
+
+          TAG="${{ github.ref_name }}"
+          gh release download "$TAG" -p "checksums.txt" -D "$_tmp" \
+            --repo "${GITHUB_REPOSITORY}" 2>/dev/null || true
+
+          if [ -f "$_tmp/checksums.txt" ]; then
+            new_files=$(awk '{print $2}' "$_tmp/new_checksums.txt")
+            while IFS= read -r line; do
+              fname=$(echo "$line" | awk '{print $2}')
+              if ! printf '%s\n' $new_files | grep -qxF "$fname"; then
+                echo "$line"
+              fi
+            done < "$_tmp/checksums.txt" > "$_tmp/kept.txt"
+            sort -k2 "$_tmp/kept.txt" "$_tmp/new_checksums.txt" > checksums.txt
+          else
+            sort -k2 "$_tmp/new_checksums.txt" > checksums.txt
+          fi
+          echo "=== Final checksums.txt ==="
+          cat checksums.txt
+
+      - name: Create/Update GitHub Release (clobber same-name assets only)
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          TAG="${{ github.ref_name }}"
+          # 开发通道产物也进 GitHub Release（内部可取），但下面 rsync 只发生产包。
+          # production/ 里除 tgz 还有刚合并的 checksums.txt，一并作为 Release 资产。
+          FILES=(.release/production/* .release/internal/*)
+          if [ ${#FILES[@]} -eq 0 ]; then echo "无产物可发布"; exit 0; fi
+          echo "Publishing release assets for $TAG: ${FILES[*]}"
+          if ! gh release upload "$TAG" "${FILES[@]}" --clobber --repo "${GITHUB_REPOSITORY}"; then
+            echo "Upload failed (release may not exist). Creating release then retrying upload..."
+            gh release create "$TAG" --title "Release $TAG" --generate-notes --repo "${GITHUB_REPOSITORY}" || true
+            gh release upload "$TAG" "${FILES[@]}" --clobber --repo "${GITHUB_REPOSITORY}"
+          fi
+
+      - name: Upload to remote via rsync (production packages only)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          SSH_HOST: ${{ secrets.DOWNLOAD_SSH_HOST }}
+          SSH_USER: ${{ secrets.DOWNLOAD_SSH_USER }}
+          SSH_KEY: ${{ secrets.DOWNLOAD_SSH_KEY }}
+          SSH_PORT: ${{ secrets.DOWNLOAD_SSH_PORT }}
+          REMOTE_DIR: ${{ secrets.DOWNLOAD_SSH_REMOTE_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC_DIR=".release/production"
+          if [[ ! -d "$SRC_DIR" ]] || [[ -z "$(ls -A "$SRC_DIR" 2>/dev/null)" ]]; then
+            echo "没有生产通道产物（internal/ 里的开发包不进下载目录）"; exit 0; fi
+          if [[ -z "${SSH_HOST:-}" || -z "${SSH_USER:-}" || -z "${SSH_KEY:-}" || -z "${REMOTE_DIR:-}" ]]; then
+            echo "SSH upload skipped (secrets not fully configured)."; exit 0; fi
+          TAG="${{ github.ref_name }}"
+          PORT="${SSH_PORT:-22}"
+          DEST_DIR="${REMOTE_DIR%/}/${TAG}/"
+          echo "TAG=$TAG DEST_DIR=$DEST_DIR"; ls -la "$SRC_DIR"
+          mkdir -p ~/.ssh; chmod 700 ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/id_rsa; chmod 600 ~/.ssh/id_rsa
+          if [[ "$PORT" != "22" ]]; then
+            ssh-keyscan -p "$PORT" -t rsa,ecdsa,ed25519 "$SSH_HOST" | awk -v h="$SSH_HOST" -v p="$PORT" '{ $1 = "["h"]:"p; print }' >> ~/.ssh/known_hosts 2>/dev/null || true
+          else
+            ssh-keyscan -p "$PORT" -t rsa,ecdsa,ed25519 "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          fi
+          chmod 644 ~/.ssh/known_hosts || true
+          SSH_OPTS="-i ~/.ssh/id_rsa -p $PORT -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o BatchMode=yes -o ConnectTimeout=15"
+          ssh -vvv $SSH_OPTS "$SSH_USER@$SSH_HOST" "echo 'SSH OK'; uname -a" || { echo "SSH connectivity failed"; exit 1; }
+          ssh $SSH_OPTS "$SSH_USER@$SSH_HOST" "mkdir -p '$DEST_DIR'"
+          # 不带 --delete：同一 tag 目录里还有别的 workflow 发的包，删除不属本 job 的权限
+          rsync -avz -e "ssh $SSH_OPTS" "$SRC_DIR/" "$SSH_USER@$SSH_HOST:$DEST_DIR"

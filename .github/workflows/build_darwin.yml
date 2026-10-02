@@ -1,0 +1,272 @@
+name: Build GNB For macOS
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*.*.*"
+
+env:
+  PROJECT: gnb
+  BASE_URL: "https://download.mynet.club/gnb"
+  # 想出的通道。未指定发行源码提交的通道会被 plan job 标为 skipped 并写进 summary，
+  # 补丁/源码准备线在 packages/RELEASE-SOURCES 填上 commit 后，它自动进入矩阵。
+  CHANNELS: main,main-patched
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      channels: ${{ steps.pick.outputs.channels }}
+    steps:
+      - name: Checkout tooling
+        uses: actions/checkout@v4
+        with:
+          # 发行源码提交是历史里的固定提交，脚本要能 git archive 它们
+          fetch-depth: 0
+
+      - name: Pick buildable channels
+        id: pick
+        run: |
+          set -euo pipefail
+          buildable=""
+          skipped=""
+          IFS=',' read -r -a list <<< "${{ env.CHANNELS }}"
+          for ch in "${list[@]}"; do
+            ch="$(printf '%s' "$ch" | tr -d ' ')"
+            [ -n "$ch" ] || continue
+            if sh scripts/release-sources.sh require "$ch" release_source_commit >/dev/null 2>&1; then
+              buildable="${buildable}\"$ch\","
+            else
+              skipped="$skipped $ch"
+            fi
+          done
+          if [ -z "$buildable" ]; then
+            echo "没有通道的发行源码提交被指定（CHANNELS=${{ env.CHANNELS }}）—— 不发空产物。" >&2
+            echo "请由补丁/源码准备线在 packages/RELEASE-SOURCES 固定 release_source_commit。" >&2
+            exit 1
+          fi
+          echo "channels=[${buildable%,}]" >> "$GITHUB_OUTPUT"
+          {
+            echo "## 通道取舍（macOS）"
+            echo "- 构建: $(printf '%s' "$buildable" | tr -d '\"')"
+            if [ -n "$skipped" ]; then
+              echo "- **跳过**:$skipped"
+              echo "  原因：packages/RELEASE-SOURCES 里这些通道的 release_source_commit 仍是 UNSET。"
+              echo "  发行流程不会替你推断源码提交 —— 缺的就是缺，补完自动进矩阵。"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        channel: ${{ fromJSON(needs.plan.outputs.channels) }}
+        include:
+          - { arch: amd64, cc: "clang -arch x86_64" }
+          - { arch: arm64, cc: "clang -arch arm64"  }
+
+    runs-on: macos-latest
+
+    steps:
+      - name: Free disk space
+        run: |
+          # macOS runner 空间相对充裕，主要清理 Xcode 旧模拟器缓存
+          sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes || true
+          df -h
+
+      - name: Checkout tooling
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release tag
+        id: tag
+        run: |
+          set -euo pipefail
+          REF="${GITHUB_REF_NAME}"
+          # workflow_dispatch 时 ref 是分支名（含 /），不能当包名版本号用
+          if printf '%s' "$REF" | grep -qE '^v[0-9][0-9A-Za-z.-]*$'; then
+            echo "tag=$REF" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=v$(cat version)-g$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install dependencies (Homebrew)
+        run: |
+          brew update || true
+          if ! brew list --versions cmake >/dev/null 2>&1; then
+            brew install cmake || true
+          fi
+
+      # 不 apply 补丁、不插 Features 行：构建树由 gnb-dist.sh 从
+      # packages/RELEASE-SOURCES 指定的固定发行源码提交 git archive 出来。
+      # 产物落进 .pkg/<tag>/<publish 类>/，类由 SSOT 的 publish 字段决定，
+      # 下游按目录分类，不靠包名猜（包名模式无法区分两类）。
+      - name: Build and package (${{ matrix.channel }})
+        run: |
+          set -euo pipefail
+          PUBLISH="$(sh scripts/release-sources.sh require '${{ matrix.channel }}' publish)"
+          sh scripts/gnb-dist.sh \
+            --channel '${{ matrix.channel }}' \
+            --os darwin \
+            --arch '${{ matrix.arch }}' \
+            --tag "${{ steps.tag.outputs.tag }}" \
+            --make-var "CC=${{ matrix.cc }}" \
+            --strip-cmd strip \
+            --archive \
+            --dist-dir ".pkg/${{ steps.tag.outputs.tag }}/$PUBLISH"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: gnb-${{ matrix.channel }}-darwin-${{ matrix.arch }}
+          path: .pkg/${{ steps.tag.outputs.tag }}/*/*.tgz
+          if-no-files-found: error
+
+  publish:
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tooling
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: .release/
+
+      # 分类依据是产物名里的通道 + packages/RELEASE-SOURCES 的 publish 字段：
+      # gnb-<channel>-darwin-<arch> 里的 channel 段是精确字符串，不做模式匹配。
+      - name: Split production vs internal artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p .release/production .release/internal
+          moved=0
+          for cls in production internal; do
+            for ch in $(sh scripts/release-sources.sh channels "$cls"); do
+              for d in .release/gnb-"$ch"-*/; do
+                [ -d "$d" ] || continue
+                find "$d" -maxdepth 1 -type f -name '*.tgz' -exec mv -t .release/"$cls"/ {} +
+                moved=$((moved+1))
+              done
+            done
+          done
+          _left=$(find .release -type f -name '*.tgz' \
+                    -not -path '.release/production/*' -not -path '.release/internal/*' | wc -l | tr -d ' ')
+          if [ "$_left" -ne 0 ]; then
+            echo "有 $((_left)) 个产物没被归入任何已登记通道，拒绝静默发行：" >&2
+            find .release -type f -name '*.tgz' \
+              -not -path '.release/production/*' -not -path '.release/internal/*' >&2
+            exit 1
+          fi
+          echo "production: $(ls .release/production 2>/dev/null | tr '\n' ' ')"
+          echo "internal  : $(ls .release/internal 2>/dev/null | tr '\n' ' ')"
+
+
+      - name: Generate and merge checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd .release/production
+          if [ -z "$(ls -A . 2>/dev/null)" ]; then
+            echo "本批没有生产通道产物，跳过 checksums 合并"; exit 0
+          fi
+          # 生成本批次校验
+          sha256sum *.tgz > new_checksums.txt
+
+          # 尝试从 Release 下载已有 checksums.txt，合并（同文件名替换，新增追加）
+          TAG="${{ github.ref_name }}"
+          mkdir -p .existing
+          gh release download "$TAG" -p "checksums.txt" -D .existing/ \
+            --repo "${GITHUB_REPOSITORY}" 2>/dev/null || true
+
+          if [ -f .existing/checksums.txt ]; then
+            new_files=$(awk '{print $2}' new_checksums.txt)
+            while IFS= read -r line; do
+              fname=$(echo "$line" | awk '{print $2}')
+              if ! printf '%s\n' $new_files | grep -qxF "$fname"; then
+                echo "$line"
+              fi
+            done < .existing/checksums.txt > kept.txt
+            sort -k2 kept.txt new_checksums.txt > checksums.txt
+          else
+            sort -k2 new_checksums.txt > checksums.txt
+          fi
+          echo "=== Final checksums.txt ==="
+          cat checksums.txt
+
+      - name: Create/Update GitHub Release (clobber same-name assets only)
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          TAG="${{ github.ref_name }}"
+          # 开发通道产物也进 GitHub Release（内部可取），但下面 rsync 只发生产包
+          FILES=(.release/production/* .release/internal/*)
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "没有任何产物可发布，跳过 Release"; exit 0
+          fi
+          echo "Publishing release assets for $TAG: ${FILES[*]}"
+          echo "Trying upload with --clobber (if release missing, will create then retry)"
+          if ! gh release upload "$TAG" "${FILES[@]}" --clobber --repo "${GITHUB_REPOSITORY}" 2>/dev/null; then
+            echo "Upload failed (release may not exist). Creating release then retrying upload..."
+            gh release create "$TAG" --title "Release $TAG" --generate-notes --repo "${GITHUB_REPOSITORY}" || true
+            gh release upload "$TAG" "${FILES[@]}" --clobber --repo "${GITHUB_REPOSITORY}"
+          fi
+
+      - name: Upload to remote via rsync (production packages only)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          SSH_HOST: ${{ secrets.DOWNLOAD_SSH_HOST }}
+          SSH_USER: ${{ secrets.DOWNLOAD_SSH_USER }}
+          SSH_KEY: ${{ secrets.DOWNLOAD_SSH_KEY }}
+          SSH_PORT: ${{ secrets.DOWNLOAD_SSH_PORT }}
+          REMOTE_DIR: ${{ secrets.DOWNLOAD_SSH_REMOTE_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::group::Upload debug: env summary"
+          SRC_DIR=".release/production"
+          if [[ ! -d "$SRC_DIR" ]]; then
+            echo "$SRC_DIR not found; nothing to upload"
+            exit 0
+          fi
+          if [[ -z "$(ls -A "$SRC_DIR" 2>/dev/null)" ]]; then
+            echo "没有生产通道产物（internal/ 里的开发包不会进下载目录）"; exit 0
+          fi
+          TAG="${{ github.ref_name }}"
+          if [[ -z "${SSH_HOST:-}" || -z "${SSH_USER:-}" || -z "${SSH_KEY:-}" || -z "${REMOTE_DIR:-}" ]]; then
+            echo "SSH upload skipped (secrets not fully configured)."; exit 0; fi
+          PORT="${SSH_PORT:-22}"
+          DEST_DIR="${REMOTE_DIR%/}/${TAG}/"
+          echo "TAG=$TAG"; echo "SSH_HOST=$SSH_HOST PORT=$PORT"; echo "DEST_DIR=$DEST_DIR"
+          echo "Listing $SRC_DIR:"; ls -la "$SRC_DIR" || true; du -sh "$SRC_DIR"/* 2>/dev/null || true
+          echo "::endgroup::"
+
+          mkdir -p ~/.ssh; chmod 700 ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/id_rsa; chmod 600 ~/.ssh/id_rsa
+          if [[ "$PORT" != "22" ]]; then
+            ssh-keyscan -p "$PORT" -t rsa,ecdsa,ed25519 "$SSH_HOST" | awk -v h="$SSH_HOST" -v p="$PORT" '{ $1 = "["h"]:"p; print }' >> ~/.ssh/known_hosts 2>/dev/null || true
+          else
+            ssh-keyscan -p "$PORT" -t rsa,ecdsa,ed25519 "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          fi
+          chmod 644 ~/.ssh/known_hosts || true
+          echo "::group::Upload debug: known_hosts"; wc -l ~/.ssh/known_hosts || true; head -n 5 ~/.ssh/known_hosts || true; echo "::endgroup::"
+
+          SSH_OPTS="-i ~/.ssh/id_rsa -p $PORT -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o BatchMode=yes -o ConnectTimeout=15"
+          echo "::group::Upload debug: SSH -vvv connectivity test"; ssh -vvv $SSH_OPTS "$SSH_USER@$SSH_HOST" "echo 'SSH OK'; uname -a" || { echo "SSH connectivity failed"; exit 1; }; echo "::endgroup::"
+
+          echo "::group::Upload debug: prepare remote dir"; ssh $SSH_OPTS "$SSH_USER@$SSH_HOST" "mkdir -p '$DEST_DIR' && echo 'Remote dir prepared: $DEST_DIR'"; echo "::endgroup::"
+
+          echo "::group::Upload debug: rsync dry-run (-n)"; rsync -avzn -e "ssh $SSH_OPTS" "$SRC_DIR/" "$SSH_USER@$SSH_HOST:$DEST_DIR" || { echo "rsync dry-run failed"; exit 1; }; echo "::endgroup::"
+
+          echo "::group::Upload: rsync real run"; rsync -avz -e "ssh $SSH_OPTS" "$SRC_DIR/" "$SSH_USER@$SSH_HOST:$DEST_DIR"; echo "::endgroup::"

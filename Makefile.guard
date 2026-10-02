@@ -1,0 +1,21 @@
+# MyNet 门禁（独立于本仓构建 Makefile）—— make -f Makefile.guard check
+# 语言：C（opengnb fork）
+.PHONY: lint test guard check install-hooks
+
+lint:
+	@sh scripts/check.sh lint
+
+test:
+	@sh scripts/check.sh test
+
+guard:
+	@echo "▸ guard（安全红线）"
+	@sh .githooks/guard.sh
+
+check: guard lint test
+	@echo "✓ check 通过"
+
+install-hooks:
+	@git config core.hooksPath .githooks
+	@chmod +x .githooks/*
+	@echo "✓ hooks 已安装（core.hooksPath = .githooks）"

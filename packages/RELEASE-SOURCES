@@ -1,0 +1,63 @@
+# GNB 发行源码提交 SSOT（Actions 只编译这里记录的提交）
+#
+# 为什么单独立一个文件，而不复用 packages/BASELINE：
+#   BASELINE 是**补丁制作侧**的事实源（补丁栈、幂等标记、重基记录），由打补丁的流程维护；
+#   本文件是**发行侧**的事实源 —— Actions 要 checkout 哪个已固定的源码提交、
+#   该提交对应哪个作者标识、构建出的二进制该不该报 Features 行、能不能进生产下载目录。
+#   两者职责不同，写在一起会让补丁重基顺带动到发行口径（反之亦然）。
+#
+# Actions 的行为约束（见 docs/gnb-maintenance-plan.md §「开发与发行的职责边界」）：
+#   只导出本文件指定的提交 → 校验源码身份 → 编译 → 校验能力输出 → 打包 → 发行。
+#   不 apply 补丁、不改功能源码、不生成补丁包。任何校验失败都必须阻断发行。
+#
+# 字段（| 分隔，顺序固定，# 注释行独立）：
+#   channel                通道名，同时进产物目录名
+#   author_identity        作者侧标识（上游 commit 或作者 ZIP 的 SHA256），与本地 SHA 不同命名空间
+#   local_source_commit    本仓「未打补丁纯源码」提交（full sha）
+#   release_source_commit  Actions 导出的固定发行源码提交（full sha）；UNSET = 尚未指定，必须失败
+#   patch_package          该通道源码对应的补丁包目录（文档/溯源用；Actions 不会去 apply）
+#   src_version            version 文件期望值
+#   features_mark          构建后的 gnb 二进制里 "Features: proxy" 应为 present 还是 absent
+#   publish                production = 可进生产下载目录；internal = 只进 GitHub Release/CI 产物
+#
+# main 通道的 UNSET 说明：本线现有纯源码提交 2313dea 是**旧嵌套布局**（src/Makefile.*、src/src/），
+# 与本文件要求的根布局构建入口不兼容；根布局提交（c8d7175 起）的 src/ 已含 MyNet proxy 代码。
+# 「根布局 + 纯上游 src」的固定提交属于源码准备，不是发行脚本能推断或生成的，
+# 需补丁/同步线补一次提交后把 full sha 填进来。
+# 归一方法已实测可用：`git archive 2313dea:src` 导出的就是根布局上游树
+# （Makefile.inc 在导出根、源码在其 src/ 下），scripts/check.sh 的 test 段用的正是这条判断。
+#
+# 2026-10-02 换基（开发者裁定）：**发行基线 = 作者开发包**，不再是上游 1.6.8 发行版。
+# 理由：热重启只在做发包里做完了（发行版 `2313dea` 里 `gnb_hot_restart_prepare` 只是命令字，
+# 没有停/起 worker 的实现；开发包 `74414d1` 有 gnb_worker_wait_worker_started/stoped 全套，
+# 并原生修了日志/UDP fd 泄漏 gnb_log_udp_close 与 mmap 的 MAP_FAILED 判失败）。
+# x-dev-patched 通道随之并掉：它和主线现在是同一棵树，三个通道降为两个。
+#
+# main-patched 现值 ffdf816 的来处（就是 main 线自己的两个提交）：
+#   基线提交 b1d4534 = 开发包根布局（树对象 958f3f9 == `74414d1:src`，
+#     且已用 sources/author-dev/1.6.8-dev-74414d1/gnb-1.6.8-dev.zip 重解压逐字节比对，
+#     ZIP SHA256 与下方 author_identity 逐字一致，差异只有 4 项 macOS 元数据）；
+#   proxy 提交 ffdf816 = 基线 + 8 个文件（Makefile.inc、Makefile.openwrt.inc、src/cli/gnb.c、
+#     src/gnb_core.c、src/gnb_pf.c、src/gnb_proxy.c、src/gnb_proxy.h、src/packet_filter/gnb_pf_route.c）。
+#   `git diff b1d4534..ffdf816` 就是我们在源码上的全部改动，多一个文件即为混入别的东西。
+#   实测：macOS arm64 `make -f Makefile.Darwin` 退出码 0，四程序齐全，`gnb -v` 末行打印 Features: proxy。
+#
+# local_source_commit 填 b1d4534 而不是 74414d1：两者树内容逐字节相同，但 74414d1 只在
+# 作者快照的导入分支（x-dev/x-dev-v2，未推送）上可达，而 scripts/check.sh 的 test 段要在
+# CI 上把它导出成纯源码树再重放补丁串 —— 钉一个 Actions 取不到的提交，守护就是自缚。
+# 基线提交在 main 线上，所以钉它。
+#
+# 未跟 x-dev-v2 那条线的两处差异，都是有意的：它的根 Makefile 比开发包多 21 行（不属于 proxy，
+# 没有带进来）；它的 dev 补丁串是 0001+0002 两份、文件名仍是旧的 gnb_proxy_conf，
+# 本发行提交用的是合并后的一份、文件名定稿 gnb_proxy。
+#
+# 产物版本号里的 -dev（2026-10-02 开发者裁定）：开发包快照的 version 文件仍写 1.6.8，
+# 出包若不标记就会和真正从已发行 1.6.8 出的包**同名**，而 mynet_ctl 的发布表按
+# {name}_{platform}_{arch}_{version} 解析文件名（ReleaseDomainService.php:196），
+# 两边会撞成同一版本。规则写在 gnb-dist.sh 的 tag 段、只认 author_identity：
+# `opengnb/opengnb@…` 是已发行上游 → 不加后缀；其它（作者 ZIP）→ 版本号尾缀 -dev。
+# 未识别的新身份形态默认带 -dev，宁可多标不可漏标。
+
+channel|author_identity|local_source_commit|release_source_commit|patch_package|src_version|features_mark|publish
+main|opengnb/opengnb@c411f14ee647|2313dea3288c98b363b2994c348452ef74cb7107|UNSET|none|1.6.8|absent|production
+main-patched|author-zip@1daa8c78cb07d48e116530798bf13fbfe7d5549410c23f5aa004ae8aff59c344|b1d45345bf63ad6a73453d9efb5fe3086178da1e|ffdf8163a91e296a67df44e1ec1bd629b3774f0f|packages/1.6.8-dev-74414d1/p1-route-proxy|1.6.8|present|production

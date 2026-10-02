@@ -1,0 +1,121 @@
+name: Verify GNB Tooling And Channel Tests
+
+# D 段验证：发行侧的一切结论只在这条云端流水线里成立，不引用任何本地/SSH/实机跑过的记录。
+# 这里只验两件事：
+#   1) 工具脚本与补丁包索引自身没问题（scripts/check.sh lint）；
+#   2) 每个「已固定发行源码提交」的通道，proxy 单元测试在**它自己导出的源码树**里通过。
+# 第 2 点是关键：测的不是工作区当前 src/，而是发行真正要编译的那份提交。
+# 数据面（双机 NAT 回程、热加载、表满/分片/PONG、热重启对照）不在本 workflow 的能力范围内，
+# 属计划 §8D 的实机项，状态见 RELEASE-MATRIX.md 与 dev-plan 勾选表。
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - dev-2026-01
+
+env:
+  CHANNELS: main,main-patched
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tooling-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tooling
+        uses: actions/checkout@v4
+
+      - name: Install lint dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
+
+      # check.sh 的 lint 含「脚本语法」和「补丁包索引一致性」。后者是硬约束：
+      # 漏登记一个补丁包，重基时就会静默丢功能。它现在因 packages/README.md 未登记
+      # p1-route-proxy 而红 —— 那是 A 段（补丁包索引）的活，不由发行侧代填。
+      - name: Run tooling lint
+        run: sh scripts/check.sh lint
+
+  channel-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tooling
+        uses: actions/checkout@v4
+        with:
+          # 发行源码提交是历史里的固定提交，要能 git archive 出来
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y build-essential
+
+      - name: Test each buildable channel in its own exported tree
+        run: |
+          set -uo pipefail
+          failed=""
+          passed=""
+          skipped=""
+          row() { printf '| %s | %s | %s |\n' "$1" "$2" "$3" >> "$GITHUB_STEP_SUMMARY"; }
+          {
+            echo "## 通道测试（在各通道自己的发行源码树里跑）"
+            echo
+            echo "测的不是工作区当前 src/，而是发行真正要编译的那份提交。"
+            echo
+            echo "| 通道 | 发行源码提交 | proxy 单测 |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          IFS=',' read -r -a list <<< "${{ env.CHANNELS }}"
+          for ch in "${list[@]}"; do
+            ch="$(printf '%s' "$ch" | tr -d ' ')"
+            [ -n "$ch" ] || continue
+            sha="$(sh scripts/release-sources.sh require "$ch" release_source_commit 2>/dev/null)" || sha=""
+            if [ -z "$sha" ]; then
+              echo "::notice::$ch 的 release_source_commit 仍是 UNSET —— 不推断，跳过"
+              skipped="$skipped $ch"
+              row "$ch" "UNSET" "跳过（无固定发行源码提交）"
+              continue
+            fi
+            pkg="$(sh scripts/release-sources.sh require "$ch" patch_package)"
+            if [ "$pkg" = "none" ]; then
+              echo "::notice::$ch 无补丁包（纯上游对照），无 proxy 单测可跑"
+              skipped="$skipped $ch"
+              row "$ch" "${sha:0:7}" "跳过（patch_package=none）"
+              continue
+            fi
+            echo "::group::$ch ($sha)"
+            work="$(mktemp -d)"
+            if ! git archive "$sha" | tar -x -C "$work"; then
+              echo "错误: 导出 $sha 失败"
+              rm -rf "$work"; failed="$failed $ch"; row "$ch" "${sha:0:7}" "✗ 导出失败"
+              echo "::endgroup::"; continue
+            fi
+            tdir="$(find "$work/packages" -maxdepth 3 -type d -name tests 2>/dev/null | head -1)"
+            if [ -z "$tdir" ]; then
+              echo "错误: $sha 的导出树缺补丁包的 tests 目录 —— 单测无从跑起，按失败处理"
+              rm -rf "$work"; failed="$failed $ch"; row "$ch" "${sha:0:7}" "✗ 导出树缺 tests"
+              echo "::endgroup::"; continue
+            fi
+            ( cd "$tdir" && make )
+            rc=$?
+            rm -rf "$work"
+            echo "::endgroup::"
+            if [ "$rc" -eq 0 ]; then
+              passed="$passed $ch"; row "$ch" "${sha:0:7}" "✓ 通过"
+            else
+              failed="$failed $ch"; row "$ch" "${sha:0:7}" "✗ 失败（退出码 $rc）"
+            fi
+          done
+          {
+            echo
+            [ -n "$passed" ]  && echo "通过:$passed"
+            [ -n "$skipped" ] && echo "跳过:$skipped —— 缺的是源码准备线的固定提交，补上自动进入测试。"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$failed" ]; then
+            echo "以下通道的 proxy 单测失败:$failed" >&2
+            exit 1
+          fi
+          if [ -z "$passed" ]; then
+            echo "没有任何通道被真正测到（全部跳过）—— 跳过不是通过。" >&2
+            exit 1
+          fi

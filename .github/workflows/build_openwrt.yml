@@ -1,0 +1,321 @@
+name: Build GNB For OpenWrt (SDK 24.10)
+
+# 使用官方 OpenWrt SDK 24.10 编译，对应本地 build_openwrt.sh 的逻辑
+# 优势：GCC 13.3.0 + musl 1.2.5，与 OpenWrt 官方包使用同一工具链，兼容性最好
+# 产物为动态链接 musl libc，OpenWrt 设备上有 musl 运行时，可直接运行
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*.*.*"
+
+env:
+  PROJECT: gnb
+  SDK_VERSION: "24.10.0"
+  SDK_GCC: "13.3.0"
+  CHANNELS: main,main-patched
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      channels: ${{ steps.pick.outputs.channels }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Pick buildable channels
+        id: pick
+        run: |
+          set -euo pipefail
+          buildable=""
+          skipped=""
+          IFS=',' read -r -a list <<< "${{ env.CHANNELS }}"
+          for ch in "${list[@]}"; do
+            ch="$(printf '%s' "$ch" | tr -d ' ')"
+            [ -n "$ch" ] || continue
+            if sh scripts/release-sources.sh require "$ch" release_source_commit >/dev/null 2>&1; then
+              buildable="${buildable}\"$ch\","
+            else
+              skipped="$skipped $ch"
+            fi
+          done
+          if [ -z "$buildable" ]; then
+            echo "没有通道的发行源码提交被指定（CHANNELS=${{ env.CHANNELS }}）—— 不发空产物。" >&2
+            exit 1
+          fi
+          echo "channels=[${buildable%,}]" >> "$GITHUB_OUTPUT"
+          {
+            echo "## 通道取舍（OpenWrt）"
+            echo "- 构建: $(printf '%s' "$buildable" | tr -d '\"')"
+            if [ -n "$skipped" ]; then
+              echo "- **跳过**:$skipped —— packages/RELEASE-SOURCES 里 release_source_commit 仍为 UNSET"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        channel: ${{ fromJSON(needs.plan.outputs.channels) }}
+        include:
+          - { arch: arm64,     sdk_target: armsr/armv8,      sdk_name: armsr-armv8,      sdk_libc: musl     }
+          - { arch: amd64,     sdk_target: x86/64,           sdk_name: x86-64,           sdk_libc: musl     }
+          - { arch: mipsel,    sdk_target: ramips/mt7621,    sdk_name: ramips-mt7621,    sdk_libc: musl     }   # hard-float
+          - { arch: mipsel-sf, sdk_target: ramips/mt7620,    sdk_name: ramips-mt7620,    sdk_libc: musl     }   # soft-float (MT7620 等无 FPU 设备)
+          - { arch: mips,      sdk_target: ath79/generic,    sdk_name: ath79-generic,    sdk_libc: musl     }   # soft-float (AR71xx/AR9xxx 无 FPU)
+          - { arch: armv7,     sdk_target: bcm27xx/bcm2709,  sdk_name: bcm27xx-bcm2709,  sdk_libc: musl_eabi }  # hard-float
+          # armv7-sf (mxs/generic) 暂时注释：i.MX28 等无 VFP 设备较罕见，且 OpenWrt 24.10 可能已放弃该 target
+          # - { arch: armv7-sf, sdk_target: mxs/generic, sdk_name: mxs-generic, sdk_libc: musl }
+
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+            "$AGENT_TOOLSDIRECTORY" || true
+          df -h
+
+      - name: Checkout tooling
+        uses: actions/checkout@v4
+        with:
+          # 固定发行源码提交要在历史里能 git archive 出来
+          fetch-depth: 0
+
+      - name: Resolve release tag
+        id: tag
+        run: |
+          set -euo pipefail
+          REF="${GITHUB_REF_NAME}"
+          if printf '%s' "$REF" | grep -qE '^v[0-9][0-9A-Za-z.-]*$'; then
+            echo "tag=$REF" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=v$(cat version)-g$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential wget zstd tar file
+
+      - name: Cache OpenWrt SDK ${{ env.SDK_VERSION }} / ${{ matrix.arch }}
+        id: sdk_cache
+        uses: actions/cache@v4
+        with:
+          path: /opt/openwrt-sdk/${{ env.SDK_VERSION }}/${{ matrix.sdk_name }}
+          key: openwrt-sdk-${{ env.SDK_VERSION }}-${{ matrix.sdk_name }}-gcc${{ env.SDK_GCC }}-v1
+
+      - name: Download and extract OpenWrt SDK
+        if: steps.sdk_cache.outputs.cache-hit != 'true'
+        run: |
+          SDK_FILE="openwrt-sdk-${{ env.SDK_VERSION }}-${{ matrix.sdk_name }}_gcc-${{ env.SDK_GCC }}_${{ matrix.sdk_libc }}.Linux-x86_64.tar.zst"
+          SDK_URL="https://downloads.openwrt.org/releases/${{ env.SDK_VERSION }}/targets/${{ matrix.sdk_target }}/${SDK_FILE}"
+          echo "Downloading SDK: $SDK_URL"
+          wget -q --show-progress -O "/tmp/${SDK_FILE}" "$SDK_URL"
+          mkdir -p "/opt/openwrt-sdk/${{ env.SDK_VERSION }}"
+          cd "/opt/openwrt-sdk/${{ env.SDK_VERSION }}"
+          tar --use-compress-program=unzstd -xf "/tmp/${SDK_FILE}"
+          # 将解压出的目录统一重命名为 sdk_name，方便后续步骤定位
+          EXTRACTED=$(ls -d openwrt-sdk-* 2>/dev/null | head -1)
+          if [ -z "$EXTRACTED" ]; then
+            echo "ERROR: SDK extraction failed, no openwrt-sdk-* directory found"
+            ls -la
+            exit 1
+          fi
+          mv "$EXTRACTED" "${{ matrix.sdk_name }}"
+          rm -f "/tmp/${SDK_FILE}"
+          echo "SDK ready at: /opt/openwrt-sdk/${{ env.SDK_VERSION }}/${{ matrix.sdk_name }}"
+
+      - name: Find SDK toolchain GCC
+        id: toolchain
+        run: |
+          SDK_DIR="/opt/openwrt-sdk/${{ env.SDK_VERSION }}/${{ matrix.sdk_name }}"
+          echo "SDK_DIR: $SDK_DIR"
+          echo "Toolchain dirs:"
+          ls "$SDK_DIR/staging_dir/" | grep toolchain || echo "(none)"
+
+          # 找 *-openwrt-linux-*-gcc（排除 -cc 链接、g++ 等）
+          CC=$(find "$SDK_DIR/staging_dir" -path "*/bin/*-openwrt-linux-*gcc" ! -name "*g++*" ! -name "*-cc" 2>/dev/null | head -1)
+          if [ -z "$CC" ]; then
+            echo "ERROR: Could not find GCC binary in SDK staging_dir"
+            find "$SDK_DIR/staging_dir" -name "*gcc*" 2>/dev/null | head -20
+            exit 1
+          fi
+          echo "Found CC: $CC"
+          $CC --version | head -1
+
+          STAGING_DIR="$SDK_DIR/staging_dir"
+          STRIP=$(find "$SDK_DIR/staging_dir" -path "*/bin/*-openwrt-linux-*strip" ! -name "*-cc" 2>/dev/null | head -1)
+          echo "cc=$CC" >> "$GITHUB_OUTPUT"
+          echo "staging_dir=$STAGING_DIR" >> "$GITHUB_OUTPUT"
+          echo "strip=$STRIP" >> "$GITHUB_OUTPUT"
+
+      # 不 apply 补丁：gnb-dist.sh 从 packages/RELEASE-SOURCES 指定的固定提交导出源码树，
+      # 校验源码身份 → make → 校验四程序与能力输出 → MANIFEST/SHA256SUMS → tgz（包名带通道段
+      # 与否由 publish 类决定）。SDK 工具链通过 --make-var / 环境变量传入。
+      - name: Build and package (${{ matrix.channel }})
+        env:
+          STAGING_DIR: ${{ steps.toolchain.outputs.staging_dir }}
+        run: |
+          set -euo pipefail
+          PUBLISH="$(sh scripts/release-sources.sh require '${{ matrix.channel }}' publish)"
+          STRIP_ARG=""
+          if [ -n "${{ steps.toolchain.outputs.strip }}" ]; then
+            STRIP_ARG="--strip-cmd ${{ steps.toolchain.outputs.strip }}"
+          fi
+          # shellcheck disable=SC2086  # strip 命令可能带参数，这里就是要按词传下去
+          sh scripts/gnb-dist.sh \
+            --channel '${{ matrix.channel }}' \
+            --os openwrt \
+            --arch '${{ matrix.arch }}' \
+            --tag "${{ steps.tag.outputs.tag }}" \
+            --make-var "CC=${{ steps.toolchain.outputs.cc }}" \
+            --make-var DEBUG=0 \
+            $STRIP_ARG \
+            --archive \
+            --dist-dir ".pkg/${{ steps.tag.outputs.tag }}/$PUBLISH"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/.out" "$GITHUB_WORKSPACE/bin" || true
+          df -h
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: gnb-${{ matrix.channel }}-openwrt-${{ matrix.arch }}
+          path: .pkg/${{ steps.tag.outputs.tag }}/*/*.tgz
+          if-no-files-found: error
+
+  publish:
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: .release/
+
+      - name: Split production vs internal artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p .release/production .release/internal
+          for cls in production internal; do
+            for ch in $(sh scripts/release-sources.sh channels "$cls"); do
+              for d in .release/gnb-"$ch"-*/; do
+                [ -d "$d" ] || continue
+                find "$d" -maxdepth 1 -type f -name '*.tgz' -exec mv -t .release/"$cls"/ {} +
+              done
+            done
+          done
+          _left=$(find .release -type f -name '*.tgz' \
+                    -not -path '.release/production/*' -not -path '.release/internal/*' | wc -l | tr -d ' ')
+          if [ "$_left" -ne 0 ]; then
+            echo "有 $((_left)) 个产物未归类，拒绝静默发行：" >&2
+            find .release -type f -name '*.tgz' \
+              -not -path '.release/production/*' -not -path '.release/internal/*' >&2
+            exit 1
+          fi
+          echo "production: $(ls .release/production 2>/dev/null | tr '\n' ' ')"
+          echo "internal  : $(ls .release/internal 2>/dev/null | tr '\n' ' ')"
+
+      - name: Generate and merge checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd .release/production
+          if [ -z "$(ls -A *.tgz 2>/dev/null)" ]; then
+            echo "本批没有生产通道产物，跳过 checksums"; exit 0
+          fi
+          # 生成本批次校验
+          sha256sum *.tgz > new_checksums.txt
+
+          # 尝试从 Release 下载已有 checksums.txt，合并（同文件名替换，新增追加）
+          TAG="${{ github.ref_name }}"
+          mkdir -p .existing
+          gh release download "$TAG" -p "checksums.txt" -D .existing/ \
+            --repo "${GITHUB_REPOSITORY}" 2>/dev/null || true
+
+          if [ -f .existing/checksums.txt ]; then
+            new_files=$(awk '{print $2}' new_checksums.txt)
+            while IFS= read -r line; do
+              fname=$(echo "$line" | awk '{print $2}')
+              if ! printf '%s\n' $new_files | grep -qxF "$fname"; then
+                echo "$line"
+              fi
+            done < .existing/checksums.txt > kept.txt
+            sort -k2 kept.txt new_checksums.txt > checksums.txt
+          else
+            sort -k2 new_checksums.txt > checksums.txt
+          fi
+          echo "=== Final checksums.txt ==="
+          cat checksums.txt
+
+      - name: Upload checksums artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: checksums-openwrt
+          path: .release/production/checksums.txt
+
+      # 旧版这一格写的是 upload-artifact，OpenWrt 的 tgz 其实从没进过 GitHub Release，
+      # 也从没进下载目录 —— 设备上按 URL 取包就一直缺 OpenWrt。这里补成真正的发行。
+      - name: Upload to GitHub Release
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          TAG="${{ github.ref_name }}"
+          FILES=(.release/production/* .release/internal/*)
+          if [ ${#FILES[@]} -eq 0 ]; then echo "无产物可发布"; exit 0; fi
+          echo "Uploading to release $TAG: ${FILES[*]}"
+          gh release upload "$TAG" "${FILES[@]}" --clobber --repo "${GITHUB_REPOSITORY}" || {
+            echo "Upload failed, attempting to create release first..."
+            gh release create "$TAG" --title "Release $TAG" --notes "OpenWrt SDK build" || true
+            gh release upload "$TAG" "${FILES[@]}" --clobber --repo "${GITHUB_REPOSITORY}"
+          }
+
+      - name: Upload to remote via rsync (production packages only)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          SSH_HOST: ${{ secrets.DOWNLOAD_SSH_HOST }}
+          SSH_USER: ${{ secrets.DOWNLOAD_SSH_USER }}
+          SSH_KEY: ${{ secrets.DOWNLOAD_SSH_KEY }}
+          SSH_PORT: ${{ secrets.DOWNLOAD_SSH_PORT }}
+          REMOTE_DIR: ${{ secrets.DOWNLOAD_SSH_REMOTE_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC_DIR=".release/production"
+          if [[ ! -d "$SRC_DIR" ]] || [[ -z "$(ls -A "$SRC_DIR"/*.tgz 2>/dev/null)" ]]; then
+            echo "没有生产通道产物（internal/ 里的开发包不进下载目录）"; exit 0; fi
+          if [[ -z "${SSH_HOST:-}" || -z "${SSH_USER:-}" || -z "${SSH_KEY:-}" || -z "${REMOTE_DIR:-}" ]]; then
+            echo "SSH upload skipped (secrets not fully configured)."; exit 0; fi
+          TAG="${{ github.ref_name }}"
+          PORT="${SSH_PORT:-22}"
+          DEST_DIR="${REMOTE_DIR%/}/${TAG}/"
+          mkdir -p ~/.ssh; chmod 700 ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/id_rsa; chmod 600 ~/.ssh/id_rsa
+          if [[ "$PORT" != "22" ]]; then
+            ssh-keyscan -p "$PORT" -t rsa,ecdsa,ed25519 "$SSH_HOST" | awk -v h="$SSH_HOST" -v p="$PORT" '{ $1 = "["h"]:"p; print }' >> ~/.ssh/known_hosts 2>/dev/null || true
+          else
+            ssh-keyscan -p "$PORT" -t rsa,ecdsa,ed25519 "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          fi
+          chmod 644 ~/.ssh/known_hosts || true
+          SSH_OPTS="-i ~/.ssh/id_rsa -p $PORT -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o BatchMode=yes -o ConnectTimeout=15"
+          ssh $SSH_OPTS "$SSH_USER@$SSH_HOST" "echo 'SSH OK'" || { echo "SSH connectivity failed"; exit 1; }
+          ssh $SSH_OPTS "$SSH_USER@$SSH_HOST" "mkdir -p '$DEST_DIR'"
+          rsync -avz -e "ssh $SSH_OPTS" "$SRC_DIR/" "$SSH_USER@$SSH_HOST:$DEST_DIR"
