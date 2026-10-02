@@ -19,25 +19,29 @@ is a command word and a declaration (one hit each in `gnb_core.c/.h` and `cli/gn
 worker stop/start sequence behind it. The dev snapshot adds
 `gnb_worker_wait_worker_started/stoped` and calls them for `primary / pf_ring / index / detect /
 index_service / node`, plus `gnb_log_udp_close()` (called from `gnb_core.c:702`, absent from the
-release entirely) and the `MAP_FAILED` fix in `gnb_mmap.c`. One deliberate gap remains in the
-author's version: `gnb_secure_index_worker.c` never clears `run_flag` and is not waited on, so a
-hot restart with `safe-index on` leaves that worker running — behaviour the author has not
-defined, and CI cannot prove either way.
+release entirely) and the `MAP_FAILED` fix in `gnb_mmap.c`. The second snapshot additionally
+clears `thread_worker_run_flag` in both secure-index workers, which closes the one gap the first
+snapshot left (a busy wait with no timeout in `gnb_worker.c:98-106` would spin forever on nodes
+with `safe-index on`). CI still cannot prove the hot-restart path itself — that needs a real
+two-node run.
 
-Our own assets are exactly two: the proxy feature (a source commit) and this build matrix. The
-hot-restart packages (`p1-hot-restart`, `p1-hot-restart-v2`) and the old `p2-route-proxy` are
-deleted, not archived. `p1-route-proxy` stays in the tree only as provenance for the release
-commit — CI does not apply it, and `packages/RELEASE-SOURCES` is what decides what is buildable.
+Our own source assets are two commits, and only two: the baseline commit carries one line the
+author's tree needs to compile on LP64 (`src/gnb_conf_file.c:841`, definition aligned to the
+`gnb_uint64_t` declaration in `gnb_conf_file.h:24`), and the proxy commit carries the feature.
+The LP64 conflict is author-side and compile-time — it hit every 64-bit Linux/FreeBSD leg and
+riscv64 before that line existed, and macOS/Windows only escaped it because their SDKs typedef
+`uint64_t` as `unsigned long long`. Every new author snapshot has to re-emit that line in its
+baseline commit, or the 64-bit legs die at `src/gnb_conf_file.o`.
 
-`main-patched` = `ffdf816`: base commit `b1d4534` (tree identical to the verified ZIP, SHA256
-`1daa8c78cb07...`, re-extracted and compared byte for byte; four differences are macOS metadata)
-plus one proxy commit touching eight files. `git diff b1d4534..ffdf816` is the complete list of
-our source changes — if that ever shows a ninth file, something unrelated has entered the line.
+`main-patched` = release commit `e0228d9`: baseline commit `98f8b4e` (imported from the verified
+ZIP, SHA256 `2454c303dabd...`, re-extracted and compared byte for byte; the only difference is one
+empty directory) plus one proxy commit touching eight files. `git diff 98f8b4e..e0228d9` is the
+complete list of our source changes — if that ever shows a ninth file, something unrelated has
+entered the line.
 
-`main` is not buildable yet: a root-layout pure-upstream commit has to be prepared by the
-source/patch line first. The `plan` job of every workflow records such a channel as
-skipped in the run summary instead of guessing a commit.
-
+`main` is not buildable yet: a root-layout pure-upstream commit has to be prepared first. The
+`plan` job of every workflow records such a channel as skipped in the run summary instead of
+guessing a commit.
 
 Author identifier and local commit are separate namespaces and must never be substituted
 for one another.
@@ -56,7 +60,9 @@ Production keeps the naming contract `mynet_ctl` parses
 (`{name}_{platform}_{arch}_{version}.tgz`, see `ReleaseDomainService::parseFilename`), so
 the channel lives in the MANIFEST and the artifact directory rather than the filename.
 Internal builds insert the channel segment after the arch, e.g.
-`gnb_linux_mipsel_x-dev-patched_v1.6.8.tgz`; the arch field cannot contain an underscore,
+`gnb_linux_mipsel_x-dev-patched_v1.6.8.tgz` (that channel has since been folded into
+`main-patched`, which is production — the internal path stays as the guard for any future
+non-production channel); the arch field cannot contain an underscore,
 so such a name is unparseable by the registry and a dev package can neither overwrite a
 production package nor be registered as one. Publish jobs classify by artifact directory
 name against `RELEASE-SOURCES`, never by filename glob, and only production packages are

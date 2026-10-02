@@ -8,7 +8,7 @@
 
 | 项目 | 当前值 |
 |---|---|
-| 基线 | 作者开发快照：当前 ZIP SHA256 `2454c303dabdb5e27a13a3fe19b0c4d5066a845d12b75e80172afa84e990c1ae`，本仓未打 proxy 补丁的基线提交 `98f8b4ef16afc11a0452b5e76b9b0f1ddb84f9c1`。这份补丁串是在上一快照（ZIP `1daa8c78cb07…`，导入 `74414d12787fbd9ab36a486d0a43534f54bee470`）上制作的，proxy 改动本身未变；新快照上已重验干净应用（见下方验证记录）。`version` 仍写 1.6.8，但它**不是**上游 tag 1.6.8（那条基线在 `packages/1.6.8-c411f14ee647/`），两份补丁串上下文不同，不可互换。 |
+| 基线 | 作者开发快照：当前 ZIP SHA256 `2454c303dabdb5e27a13a3fe19b0c4d5066a845d12b75e80172afa84e990c1ae`，本仓未打 proxy 补丁的基线提交 `98f8b4ef16afc11a0452b5e76b9b0f1ddb84f9c1`。这份补丁串是在上一快照（ZIP `1daa8c78cb07…`，导入 `74414d12787fbd9ab36a486d0a43534f54bee470`）上制作的，proxy 改动本身未变；新快照上已重验干净应用（见下方验证记录）。`version` 仍写 1.6.8，但它**不是**上游 tag 1.6.8 —— 上游发行版基线那条线的同名孪生包已于 2026-10-02 删除（删除前逐文件比对，正文与本包完全相同，只差一行路径注释），两条基线上下文不同、不可互换，本目录只服务开发线。 |
 | 前置 | **无**。本包直接打在干净基线上（`apply.sh` / `revert.sh` 里也从来没有 P1 检测）。 |
 | 补丁 | `patches/0001-proxy-conf.patch`（proxy.conf 主链），其中 `Features: proxy` 已合并在同一个 patch 内（`Features: proxy` 能力行），为相对**干净基线**的 diff |
 | 应用顺序 | 干净基线 → 本补丁；回滚即回滚本补丁 |
@@ -97,7 +97,8 @@ make -C packages/1.6.8-dev/p1-route-proxy/tests
 
 ## 已验证与待验证
 
-**下表除标明日期的两行外，全部是主线基线（`packages/1.6.8-c411f14ee647/`）的实测结果，
+**下表除标明日期的两行外，全部是在**上游 1.6.8 基线**（同功能的孪生包
+`packages/1.6.8-c411f14ee647/`，2026-10-02 已删除，正文与本包逐字节相同）上实测的结果，
 不是本开发线基线的**：本线 2026-10-02 起才有 `release_source_commit`（`packages/RELEASE-SOURCES`
 里现在钉着 `e0228d9`），各平台完整构建仍要等 CI 在那个提交上真跑一次才算数；
 下面这两行是本地与测试机跑的证据，说明改动成立，不替代 CI。
@@ -137,13 +138,20 @@ make -C packages/1.6.8-dev/p1-route-proxy/tests
 5. **分片**：独立 256 条分片缓存（30s），与五元组连接表分离。
 6. **解析**：残缺段头（缺 `]`）拒载；`proxy`/`role`/`exit`/`target` 整词匹配，避免 `proxy_foo` 误命中。
 
-## 跟随上游版本
+## 接作者新版（快照或上游发行版）
 
-1. 用 `scripts/sync_source.sh` 同步新的上游 commit，记录完整 SHA；保持新 `src/` 为上游原样。
-2. 以**新上游本身**为本补丁的唯一基线重本补丁（不再有 P1 这一层）。检查上述七个目标文件的每个 hunk，尤其 `gnb_core_create`、`pf_tun_frame_cb`、`pf_inet_fwd_cb` 和两个 Makefile；不要从含其他实验改动的工作树直接导出 diff。热更新若在新上游上有变化，那是上游的事，本包不重复实现。
-3. 把新补丁放在 `packages/<新版本>-<新上游短SHA>/p1-route-proxy/`，更新本 README 的基线、文件清单和验证记录；旧版本包保留供回滚和对照。
-4. 在干净副本应用本补丁、回滚并确认回到上游，跑 `scripts/check.sh`（它按 `RELEASE-SOURCES` 的每个带补丁通道实测这条链）、各平台构建和真实数据面验收。只有验证通过，才把它切成一个 `release_source_commit` 并填进 `packages/RELEASE-SOURCES`；发行工具只认那个提交，不会替你生成。
+1. 把新版源码**原样**导入成一个纯源码提交（作者 ZIP 只取 `gnb/` 内容，丢掉 macOS 元数据条目；
+   ZIP SHA256 记进 `sources/author-dev/<版本>-<短SHA>/SOURCE.yaml`）。这个提交就是新的基线候选。
+2. 在它之上重放 proxy 改动，自成**一个提交**。检查上述目标文件的每个 hunk，尤其
+   `gnb_core_create`、`pf_tun_frame_cb`、`pf_inet_fwd_cb` 和两个 Makefile；不要从含其他实验改动的
+   工作树直接导出 diff。热更新若在新版上有变化，那是作者侧的事，本包不重复实现。
+3. `git diff <新基线>..<新发行提交>` 必须还是那 8 个文件 —— 第 9 个文件就是混入别的东西。
+   然后把补丁串重新导出到本目录（目录按线命名，不必跟着快照改名）：
+   `git format-patch <新基线>..<新发行提交> --stdout > patches/0001-proxy-conf.patch`。
+4. 更新 `packages/RELEASE-SOURCES` 的 `local_source_commit` / `release_source_commit` 与本 README 的
+   基线、文件清单、验证记录，`make -f Makefile.guard check` 全绿后合进 `main`、重打 tag 让 CI 出包。
+   未验证通过就不改钉值：发行工具只认那个提交，不会替你生成，也不会替你兜底。
 
-补丁包与代码各有自己的事实来源：`src/` 保存上游基线，`packages/` 保存 MyNet 差异，
-`RELEASE-SOURCES` 保存「哪个已固定的提交可以出包」这三者之间的关系。
-`src/` 的本地已应用状态只是构建工作副本，不能作为下一个版本的补丁基线，也不能当作出包依据。
+事实来源分三层，别混：`main` 的**提交历史**保存源码改动（基线提交 + proxy 提交），
+本目录的补丁串只是从提交导出的载体，`RELEASE-SOURCES` 保存「哪个已固定的提交可以出包」。
+工作区 `src/` 的当前状态既不是下一个版本的基线，也不是出包依据。

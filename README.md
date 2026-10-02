@@ -1,116 +1,109 @@
-opengnb 构建与发布
+opengnb 构建与发行
 =================
 
-这个仓库提供 gnb 的统一构建与发布工作流，按不同 OS 选择对应 Makefile，并输出多架构产物，同时可上传到自定义下载站点。
+本仓是 [gnbdev/opengnb](https://github.com/gnbdev/opengnb) 的 fork，保留**上游根布局**
+（`Makefile*`、`version`、`src/`、`libs/` 就在仓库根），在此之上做两件事：
 
-上游源码
-------
+1. 我们的功能改动 = **提交**：作者快照的基线提交 + 一个 proxy 提交压在它上面；
+2. 编译与发行 = **GitHub Actions**：按通道固定的发行源码提交出多平台产物。
 
-- 原始项目仓库：
-	- gnbdev/opengnb: https://github.com/gnbdev/opengnb
-- 本仓库通过 `scripts/sync_source.sh` 从上游同步指定版本到 `src/`，随后使用 GitHub Actions 进行多平台编译与发布。
+补丁串（`packages/<基线>/p1-route-proxy/patches/*.patch`）是从提交**按需导出**的溯源件，
+CI 从不 apply 它。真相只有提交和 `packages/RELEASE-SOURCES`。
 
-工作流位置
----------
+源码身份与通道
+------------
 
-- `.github/workflows/build.yml`
+`packages/RELEASE-SOURCES` 是「CI 允许构建什么」的唯一真相源，只用
+`sh scripts/release-sources.sh {list|get|require|channels}` 读，不要 grep 它。
+
+| 通道 | 作者身份 | 基线提交 | 发行提交 | 状态 |
+|---|---|---|---|---|
+| `main` | 上游 `opengnb/opengnb@c411f14ee647` | `2313dea` | `UNSET` | 尚无根布局纯上游提交，CI 拒绝构建而非替你推断 |
+| `main-patched` | 作者开发 ZIP `2454c303dabd…` | `98f8b4ef16af` | `e0228d937d7f` | 生产发行 |
+
+不变量：`git diff <基线提交>..<发行提交>` 就是我们在源码上的全部改动（当前 8 个 proxy 文件），
+**冒出第 9 个文件即为混入别的东西**。`release_source_commit` 为 `UNSET` 的通道必须失败。
+
+接作者新快照的固定动作写在 `packages/RELEASE-SOURCES` 的注释里（换基线 → 重放 proxy 提交 →
+`git merge --no-ff` 进 `main` → 重打 tag）。钉的是**提交**不是分支名；已发布、已出过包的提交
+不许 rebase 或 force-push，否则 CI `git archive` 取不到它只能 fail-loud。
+
+构建与出包
+--------
+
+一个脚本干完六种事，各平台的 workflow 只供工具链与发布目录：
+
+```sh
+sh scripts/gnb-dist.sh --channel main-patched --os linux --arch amd64 \
+    --tag v1.6.8-dev --make make --archive --dist-dir dist
+```
+
+```
+git archive <release_source_commit> | tar -xf -     # 导出已固定的发行源码树
+→ 校验源码身份（version 相符、无 src/src/、src/gnb_proxy.c 与 Features: proxy 在不在）
+→ 按 OS 选 Makefile 编译四程序（gnb / gnb_ctl / gnb_es / gnb_crypto）
+→ strip → 从产物二进制回读能力 → MANIFEST + SHA256SUMS → tgz
+```
+
+OS → Makefile 一律跟作者的 Makefile 走，我们不加编译入口：
+`darwin/Makefile.Darwin`、`linux/Makefile.linux`、`openwrt/Makefile.openwrt`、
+`mingw/Makefile.mingw_x86_64`、`freebsd/Makefile.freebsd`、`openbsd/Makefile.openbsd`、
+`netbsd/Makefile.netbsd`。
+
+四程序必须来自同一份构建，永不出 Partial 包。
 
 触发方式
 ------
 
-- 推送 tag 形如 `v*` 会自动触发（例如 `v1.6.0.a`）。
-- 也可从 Actions 页面手动运行，并传入 `tag` 输入参数。
+- 推送形如 `v*.*.*` 的 tag（例如 `v1.6.8-dev`）→ 五个 build workflow 全矩阵跑；
+- Actions 页面 `workflow_dispatch` 手动跑（此时包名版本取自 `version` + `g<short-sha>`）；
+- `verify.yml` 跟着 `main` 的 push 跑工具守护与各通道单测。
 
-Makefile 约定
------------
-
-为支持不同操作系统，工作流会选择对应的 Makefile：
-
-- Linux: `Makefile.linux`
-- OpenWrt: `Makefile.openwrt`
-- Windows: `Makefile.windows`
-- macOS (Darwin): `Makefile.darwin`
-- FreeBSD: `Makefile.freebsd`
-
-每个 Makefile 需支持以下变量：
-
-- `OS`：目标系统（如 linux/openwrt/windows/darwin/freebsd）
-- `ARCH`：目标架构（如 amd64/arm64/armv7-softfp/armv7-hardfp/mips/...）
-- `VERSION`：版本（来自 tag）
-- `OUT_DIR`：输出目录（中间产物目录，按 `{tag}/{os}/{arch}` 分层），需将构建产物放入该目录
-  
-
-产物与校验
+平台矩阵
 --------
 
-- 打包规则：
-	- Windows 使用 `zip`
-	- 其他平台使用 `tgz`
-- 发布布局（不创建 latest，版本体现在目录层级）：
-	- 远端目录：`{DOWNLOAD_SSH_REMOTE_DIR}/{tag}/`
-	- 包文件名：`gnb_{os}_{arch}.{ext}`（文件名不含版本）
-- 发布阶段会生成 `checksums.txt`（sha256），与所有包一起上传。
+| workflow | 平台 | 说明 |
+|---|---|---|
+| `build_linux.yml` | linux | amd64, arm64, armv7-softfp/hardfp, mips(el), mips64(el), riscv64；交叉工具链，静态链接 |
+| `build_openwrt.yml` | openwrt | 官方 SDK 24.10，动态 musl（运行时由设备提供） |
+| `build_darwin.yml` | darwin | `clang -arch x86_64` / `-arch arm64` |
+| `build_windows.yml` | windows | MinGW-w64 交叉，`.exe` |
+| `build_bsd.yml` | freebsd / openbsd | `vmactions` 虚拟机里 `gmake` |
+| `verify.yml` | — | 工具 lint + 在每通道自己的发行源码树里跑 proxy 单测 |
 
-远程上传（rsync）
--------------
+产物命名与发布分级
+----------------
 
-工作流支持通过 rsync 上传到远端服务器，目录结构为：`$DOWNLOAD_SSH_REMOTE_DIR/{tag}`。
+生产包名保持 `mynet_ctl` 发布表能解析的契约 `{name}_{platform}_{arch}_{version}.tgz`
+（通道名不进文件名，只在包内 `MANIFEST` 与产物目录名里）。内部包在 arch 与 version 之间插通道段，
+arch 段不含下划线 ⇒ 这种名字注册表解析不了，也就覆盖不了生产包、不会被当成生产包登记。
 
-在仓库 Settings → Secrets and variables → Actions 中配置以下 Secrets：
+publish 作业按产物目录名回 `RELEASE-SOURCES` 查 `publish` 字段分类，不靠文件名模式匹配：
+只有 production 包 rsync 到 `DOWNLOAD_SSH_*` 指向的下载目录（`{REMOTE_DIR}/{tag}/`），
+校验文件按平台命名（`checksums-<platform>.txt`），避免多个 workflow 并发写同一个同名资产。
 
-- `DOWNLOAD_SSH_HOST`：SSH 主机名
-- `DOWNLOAD_SSH_USER`：SSH 用户名
-- `DOWNLOAD_SSH_KEY`：私钥内容（PEM）
-- `DOWNLOAD_SSH_REMOTE_DIR`：远端基础目录（不含 tag）
+本地守护
+------
 
-当以上四个 Secrets 均配置时，发布 Job 会自动上传；否则跳过上传，仅保留 GitHub Artifacts。
-
-变量语义（OS/ARCH/VERSION/OUT_DIR/SRC_DIR）
-------------------------------
-
-- `OS`：目标系统，用于选择工具链、依赖和打包方式。
-- `ARCH`：目标架构，用于交叉编译时设定编译器/ABI/指令集变体（如 armv7-softfp/hardfp）。
-- `VERSION`：发布版本号，来源于 tag（如 v1.6.0.a），用于内嵌版本信息和产物命名。
-- `OUT_DIR`：本地构建输出目录（按 `{tag}/{os}/{arch}` 分层），Makefile 需将产物放入该目录。
-- `SRC_DIR`：源码目录，固定为本仓库 `src/`。
-
-注意：不生成 `latest` 目录，发布与远程目录严格按版本命名（如 `{REMOTE_DIR}/v1.6.0.a/`）。
-
-目标平台矩阵
---------
-
-当前默认版本：`v1.6.0.a`
-
-平台与架构：
-
-- linux/openwrt（platform=linux）：`amd64, arm64, armv7-softfp, armv7-hardfp, mips, mipsel, mips64, mips64el, riscv64`
-- windows（platform=windows）：`amd64, arm64, 386`
-- darwin（platform=darwin）：`amd64, arm64`
-- freebsd（platform=freebsd）：`amd64, arm64`
-
-注意事项
------
-
-1. 请确保各平台对应 Makefile 已存在并可在 Ubuntu 构建环境下进行交叉编译（或在 Makefile 内自行拉取工具链）。
-2. 如需变更版本矩阵或命名，可编辑工作流矩阵或打包步骤。
-3. 远端下载站点的 checksums 路径可为：`https://download.mynet.club/gnb/{tag}/checksums.txt`（需与服务器目录对应）。
-
-同步外部源码到本仓库
---------------
-
-为减少外部仓库变动带来的不确定性，使用脚本将外部公开仓库指定版本同步到本仓库 `src/`，并记录来源与本地追踪信息：
-
-用法（在仓库根目录运行）：
-
-```bash
-bash scripts/sync_source.sh --repo owner/repo --ref v1.6.0.a --subdir path/in/repo --version v1.6.0.a
+```sh
+make -f Makefile.guard check      # lint + test，pre-push 钩子跑的就是它
 ```
 
-脚本行为：
-- 将外部仓库指定 `ref`（tag/branch/sha）的代码（可选 `subdir`）同步到 `src/`
-- 提交到当前仓库，提交信息包含来源仓库与来源 commit 短 SHA
-- 创建本地 tag：`src-sync/<version|ref>`（若重复则自动加时间戳后缀）
-- 在 `sources/history.ndjson` 追加一行 JSON（ndjson）用于追踪：来源仓库/引用/来源 commit、本地提交/标签、创建时间与 diffstat
+`test` 段对每个带补丁包的通道：导出它的 `local_source_commit` 成纯源码树 → 实跑补丁串 →
+断言 proxy 标记落地 → 复跑验幂等 → 在这棵派生树里跑包内单测（52 项）。这证明的正是
+CI 出包**不再**做的那一步：下一个基线还切不切得出来。
 
-之后，Actions 构建总是从本仓库 `src/` 进行编译。
-# opengnb
+历史遗留（已清理）
+------------
+
+2026-10-02 删掉了改造前的出包管线：`scripts/release.sh`、`scripts/sync_source.sh`、
+`scripts/release/**`、`packages/rebase.sh`、基线台账 `packages/BASELINE{,-XDEV}`，以及和
+`1.6.8-dev/p1-route-proxy` 逐字节同构的 `packages/1.6.8-c411f14ee647/`（只差一行路径注释）。
+需要对照当时的判断时从 git 历史取；作者源码包与测试证据留在 `sources/`、`packages/`。
+
+文档
+----
+
+- `RELEASE-MATRIX.md`：通道 × 平台的发行口径与 CI 能证明什么
+- `packages/README.md`：补丁包约定与历史结论
+- `docs/gnb-maintenance-plan.md`：维护计划（补丁/功能侧的口径在这里）

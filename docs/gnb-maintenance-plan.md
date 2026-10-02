@@ -25,7 +25,8 @@
 作者版本：1.6.8
 作者 commit：c411f14ee647
 本地纯源码导入提交：2313dea3288c98b363b2994c348452ef74cb7107
-补丁：packages/1.6.8-c411f14ee647/p1-route-proxy/
+补丁：packages/1.6.8-c411f14ee647/p1-route-proxy/（2026-10-02 已清理删除：与
+     packages/1.6.8-dev/p1-route-proxy 逐字节同构，只差一行路径注释）
 ```
 
 对应关系：
@@ -157,16 +158,26 @@ gnb_crypto
 
 ## 六、作者开发线风险记录
 
-反馈文档：
-
-[author-dev-feedback-20261002.md](author-dev-feedback-20261002.md)
+反馈文档 `author-dev-feedback-20261002.md`（针对第一个开发快照 `1daa8c78cb07…`）已于
+2026-10-02 随该快照退位删除，需要原文时从 git 历史取；这里保留结论与仍要作者给的验收结果。
 
 当前只记录代码观察，不把 MyNet 的 workflow 已经解决的问题重复列为作者要求：
 
-- 热更新采用先停旧 core，再创建新 core；初始化失败时可能半停机；
-- secure-index worker 的退出标志需要在启用该功能的模式下验证；
+- 热更新采用先停旧 core，再创建新 core；初始化失败时可能半停机（**仍未解决**，作者侧无回滚路径）；
+- secure-index worker 的退出标志：第二个快照 `2454c303dabd…` 已由作者本人补上
+  （`gnb_secure_index_worker.c:730`、`gnb_secure_index_service_worker.c:465` 各加
+  `thread_worker_run_flag = 0`），但启用该功能的热重启退出仍需实机取证；
 - 热日志触发接口需要确认主循环是否真正消费 `log_trigger`；
 - 共享内存结构发生变化，但 MyNet workflow 会保证四个程序同批构建。
+
+希望作者至少提供的验收结果（原文 §5，发行侧无法代证）：
+
+1. `safe-index on` 连续热重启 10 次；
+2. 热重启期间故意制造配置错误，确认旧 core 是否继续服务；
+3. 热日志切换 10 次，确认 fd 数量稳定；
+4. `gnb` 与 `gnb_ctl` 混用不同构建时能否明确拒绝；
+5. 双机真实数据面持续传输时热重启，确认 TCP、UDP、ICMP 是否恢复；
+6. Linux、OpenWrt、Windows 至少各完成一次上述关键路径测试。
 
 ## 七、已完成内容
 
@@ -207,7 +218,12 @@ gnb_crypto
   注意：删除只发生在本分支（`feat/gnb-release-actions`），同样的文件在 `codex/upstream-layout`
   分支与 `packages/BASELINE:20` 的 `PATCH_STACK` 里仍然存在——后者现在指向已删除的包，
   属于补丁线要收的口径，发行侧不代为改动。
-- [ ] 为两套补丁分别重打 tgz，并做解包 diff 校验。
+  **2026-10-02 收口**：`packages/BASELINE`、`packages/BASELINE-XDEV` 与 `packages/rebase.sh` 已随
+  「补丁是真相」的旧口径一并删除，提交是真相；`codex/upstream-layout` 是历史侧枝，不再往里改动。
+- [ ] 为两套补丁分别重打 tgz，并做解包 diff 校验。【2026-10-02 作废，不再执行】
+  **2026-10-02 作废**：两套补丁只剩一套（`packages/1.6.8-c411f14ee647/p1-route-proxy` 与
+  `packages/1.6.8-dev/p1-route-proxy` 逐字节同构，前者已删），包 tgz 这一交付形态也随之取消——
+  补丁串按需从提交 `git format-patch` 导出，不再作为独立交付件维护。
 
 ### B. 应用脚本
 
@@ -222,7 +238,8 @@ gnb_crypto
   这条守护已进 `scripts/check.sh` 的 `test` 段（`make -f Makefile.guard check` 全绿，两通道各 52 项单测通过）。
 - [x] 应用后检查 proxy 标记；实际标记是 `src/gnb_proxy.h`（不是原文写的 `src/gnb_proxy_conf.h`，
   那是旧 P2 包的文件名）+ `src/gnb_core.c` 的 `gnb_proxy_cfg_load` + `src/packet_filter/gnb_pf_route.c`
-  的 `gnb_proxy_pick_flow`，见 `packages/1.6.8-c411f14ee647/p1-route-proxy/apply.sh:8-10`。
+  的 `gnb_proxy_pick_flow`，见 `packages/1.6.8-dev/p1-route-proxy/apply.sh:8-10`
+  （原引用的 `packages/1.6.8-c411f14ee647/` 那份逐字节相同，已删）。
 
 
 ### C. Actions（只编译已固定的发行源码）
@@ -234,7 +251,7 @@ gnb_crypto
 - [ ] 增加 variant 矩阵，分别构建三组发行产物；
 - [ ] `main` variant checkout 纯源码基线提交；
 - [ ] `main-patched` variant checkout 已包含稳定线 proxy 的固定发行源码提交；
-- [ ] `x-dev-patched` variant checkout 已包含开发线 proxy 的固定发行源码提交；
+- [ ] `x-dev-patched` variant checkout 已包含开发线 proxy 的固定发行源码提交；【2026-10-02 作废：该通道与 main-patched 收敛成同一棵树，三通道降为两通道，见 `packages/RELEASE-SOURCES`】
 - [ ] 每个 variant 生成 manifest，记录作者标识、本地源码提交、补丁提交和构建 SHA；
 - [ ] 保证四个程序来自同一个 variant job；
 - [ ] 上传包名中明确包含 channel，避免开发包覆盖生产包。
