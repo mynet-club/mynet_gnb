@@ -8,7 +8,7 @@
 
 | 项目 | 当前值 |
 |---|---|
-| 基线 | 作者开发快照：ZIP SHA256 `1daa8c78cb07d48e116530798bf13fbfe7d5549410c23f5aa004ae8aff59c344`，本仓未打补丁的导入提交 `74414d12787fbd9ab36a486d0a43534f54bee470`。`version` 仍写 1.6.8，但它**不是**上游 tag 1.6.8（那条基线在 `packages/1.6.8-c411f14ee647/`），两份补丁串上下文不同，不可互换。 |
+| 基线 | 作者开发快照：当前 ZIP SHA256 `2454c303dabdb5e27a13a3fe19b0c4d5066a845d12b75e80172afa84e990c1ae`，本仓未打 proxy 补丁的基线提交 `98f8b4ef16afc11a0452b5e76b9b0f1ddb84f9c1`。这份补丁串是在上一快照（ZIP `1daa8c78cb07…`，导入 `74414d12787fbd9ab36a486d0a43534f54bee470`）上制作的，proxy 改动本身未变；新快照上已重验干净应用（见下方验证记录）。`version` 仍写 1.6.8，但它**不是**上游 tag 1.6.8（那条基线在 `packages/1.6.8-c411f14ee647/`），两份补丁串上下文不同，不可互换。 |
 | 前置 | **无**。本包直接打在干净基线上（`apply.sh` / `revert.sh` 里也从来没有 P1 检测）。 |
 | 补丁 | `patches/0001-proxy-conf.patch`（proxy.conf 主链），其中 `Features: proxy` 已合并在同一个 patch 内（`Features: proxy` 能力行），为相对**干净基线**的 diff |
 | 应用顺序 | 干净基线 → 本补丁；回滚即回滚本补丁 |
@@ -78,8 +78,8 @@ make -f Makefile.Darwin install
 单独操作本补丁时，目标只要是一棵干净的上游树即可：
 
 ```sh
-bash packages/1.6.8-dev-74414d1/p1-route-proxy/apply.sh .
-bash packages/1.6.8-dev-74414d1/p1-route-proxy/revert.sh .
+bash packages/1.6.8-dev/p1-route-proxy/apply.sh .
+bash packages/1.6.8-dev/p1-route-proxy/revert.sh .
 ```
 
 `apply.sh`/`revert.sh` 会处理路径前缀；不要在仓库里直接跑未经调整的 `git apply -p1`。
@@ -90,7 +90,7 @@ bash packages/1.6.8-dev-74414d1/p1-route-proxy/revert.sh .
 单元测试在 `tests/`，**链接真实的 `src/gnb_proxy.c`**（不复制算法）：
 
 ```sh
-make -C packages/1.6.8-dev-74414d1/p1-route-proxy/tests
+make -C packages/1.6.8-dev/p1-route-proxy/tests
 ```
 
 覆盖：role/ingress 解析与拒载、`/0` 与残缺段头、删文件→disabled、语法错保留上一版、最长前缀与 default 兜底、组内无出口不落 default、order 降层、tun/PONG/过期/未注册可用性、五元组粘性、分片 ip_id 跟随、client 不自动放宽准入。
@@ -98,14 +98,15 @@ make -C packages/1.6.8-dev-74414d1/p1-route-proxy/tests
 ## 已验证与待验证
 
 **下表除标明日期的两行外，全部是主线基线（`packages/1.6.8-c411f14ee647/`）的实测结果，
-不是本开发线基线的**：本基线至今没有 `release_source_commit`（`packages/RELEASE-SOURCES` 里
-是 `UNSET`），所以也没有出过包，各平台完整构建要在切出那个提交后由 CI 重跑才算数。
+不是本开发线基线的**：本线 2026-10-02 起才有 `release_source_commit`（`packages/RELEASE-SOURCES`
+里现在钉着 `e0228d9`），各平台完整构建仍要等 CI 在那个提交上真跑一次才算数；
+下面这两行是本地与测试机跑的证据，说明改动成立，不替代 CI。
 
-截至 2026-09-30：
+截至 2026-10-02：
 
 | 项 | 结果 |
 |---|---|
-| `patch --dry-run` / `git apply --check` 在**干净基线**副本 | ✅ 退出码 0（2026-10-02，`74414d1:src` 导出的根布局树；此前这行写的是「上游+P1」） |
+| `patch --dry-run` / `git apply --check` 在**干净基线**副本 | ✅ 退出码 0（2026-10-02，基线提交 `98f8b4e` 的导出树；更早一次在上一快照 `74414d1:src` 的根布局树上同样过） |
 | `scripts/check.sh` 补丁链实跑 + 幂等 + 单元测试 | ✅ 本基线 2026-10-02 实测：干净应用、复跑幂等、单测 52/52 |
 
 | `tests/` 单元测试 | ✅ 52/52 |

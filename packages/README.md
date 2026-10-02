@@ -31,7 +31,7 @@ packages/
 | 包 | 基线 commit | 状态 | 内容 |
 |---|---|---|---|
 | `1.6.8-c411f14ee647/p1-route-proxy` | `c411f14ee647`（上游 tag 1.6.8） | **当前采用** | `proxy.conf` 的地区出口策略、准入与 flow 固定；新增 `src/gnb_proxy.c/h`，改 `Makefile.inc`、`Makefile.openwrt.inc`、`src/cli/gnb.c`（`Features: proxy`）、`src/gnb_core.c`、`src/gnb_pf.c`、`src/packet_filter/gnb_pf_route.c`。1 个补丁。语义/限制/验证记录见 [包内 README](1.6.8-c411f14ee647/p1-route-proxy/README.md)。 |
-| `1.6.8-dev-74414d1/p1-route-proxy` | 作者开发快照（ZIP SHA256 `1daa8c78cb07…`，导入 `74414d1`） | **当前采用**（开发线，只出内部包） | 同一功能，按开发线基线重卷的独立补丁串。1 个补丁。 |
+| `1.6.8-dev/p1-route-proxy` | 作者开发快照，当前基线提交 `98f8b4ef16af`（ZIP SHA256 `2454c303dabd…`） | **当前采用**（开发线，只出内部包） | 同一功能，按开发线基线重卷的独立补丁串。1 个补丁。目录只按线命名（`packages/<版本>-<上游commit>/`），作者再发快照时不必改目录，快照身份在 `BASELINE` 里。 |
 
 **已删除的退位包（2026-10-02，不留档）**：`p1-hot-restart-v2`（5 个补丁）、
 `p1-hot-restart`（4 个补丁）、`p2-route-proxy`（proxy 的旧包，编号与前置都属于旧补丁链）。
@@ -47,7 +47,7 @@ packages/
 ```bash
 cd <repo>                                        # 仓库根 = 上游根布局
 sh scripts/apply_packages.sh                      # 自动挑选与 src/version 相符的基线
-sh scripts/apply_packages.sh --packages packages/1.6.8-dev-74414d1   # 两个 1.6.8* 基线并存时要显式指定
+sh scripts/apply_packages.sh --packages packages/1.6.8-dev   # 两个 1.6.8* 基线并存时要显式指定
 ```
 
 **只有一个包，没有前置**：`p1-route-proxy` 直接打在纯上游上。这一点是今天实测出来的，

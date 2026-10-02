@@ -15,7 +15,7 @@
 #
 #   默认 --src .，--packages 自动挑选：packages/ 下版本前缀与 src/version 相符的
 #   基线目录（即 packages/<版本>-<上游commit>/）。有多个候选（例如 1.6.8-c411f14ee647
-#   与 1.6.8-dev-74414d1 都以 1.6.8 开头）时必须用 --packages 显式指定。
+#   与 1.6.8-dev 都以 1.6.8 开头）时必须用 --packages 显式指定。
 #
 # 只有一个包：p1-route-proxy，无前置依赖。
 #

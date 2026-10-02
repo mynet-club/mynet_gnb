@@ -1,7 +1,7 @@
 /* test_proxy_conf.c — proxy.conf 解析 / 匹配 / order / 可用性 / 热更新 / flow
  *
  * 编译并链接真实的 src/gnb_proxy.c（非复制逻辑）。
- * 用法：make -C packages/1.6.8-dev-74414d1/p1-route-proxy/tests
+ * 用法：make -C packages/1.6.8-dev/p1-route-proxy/tests
  */
 #include <stdio.h>
 #include <stdlib.h>

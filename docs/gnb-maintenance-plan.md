@@ -46,9 +46,15 @@
 ZIP SHA256：1daa8c78cb07d48e116530798bf13fbfe7d5549410c23f5aa004ae8aff59c344
 本地导入提交：74414d1
 分支：x-dev
-补丁：packages/1.6.8-dev-74414d1/p1-route-proxy/
+补丁：packages/1.6.8-dev/p1-route-proxy/
 源码包：sources/author-dev/1.6.8-dev-74414d1/gnb-1.6.8-dev.zip
 ```
+
+同一条开发线的第二个快照（2026-10-02，已在 main 线上，是当前发行基线）：
+ZIP SHA256 `2454c303dabdb5e27a13a3fe19b0c4d5066a845d12b75e80172afa84e990c1ae`，
+导入提交 `c81b4598faeaf9b4532d1ce6b0d062b5062194d5`，
+源码包 `sources/author-dev/1.6.8-dev-2454c303/gnb-1.6.8-dev.zip`。
+上面那块写的是 `x-dev` 分支收到的第一包，两条线不共享导入提交。
 
 对应关系：
 
@@ -98,7 +104,7 @@ p1-route-proxy
 
 ```text
 packages/1.6.8-c411f14ee647/p1-route-proxy/
-packages/1.6.8-dev-74414d1/p1-route-proxy/
+packages/1.6.8-dev/p1-route-proxy/
 ```
 
 两套补丁的实现可以不同，因为上游结构、函数上下文和生命周期可能不同。禁止把稳定线补丁直接复制到 `x-dev`，也禁止反向复制。
@@ -189,7 +195,7 @@ gnb_crypto
 - [x] 为稳定线和开发线补丁各自补齐统一格式的 README：基线、文件、应用、回滚、测试、限制；
   2026-10-02 更正而非新增：两份 README 此前**逐字节相同**（`diff` 无输出），开发线那份把自己写成上游
   tag `c411f14ee647` 基线、并把应用路径写成主线目录。现各自标明真实基线
-  （`packages/1.6.8-dev-74414d1/p1-route-proxy/README.md:11`）、去除并不存在的 P1 前置（同文件 `:12`），
+  （`packages/1.6.8-dev/p1-route-proxy/README.md:11`）、去除并不存在的 P1 前置（同文件 `:12`），
   并把「未在本基线实测」的平台构建行划归主线证据（同文件 `:98-101`）。
 - [x] 检查旧 p1/p2/p3 目录是否仅作为历史归档，避免默认脚本误选旧包；
   `scripts/apply_packages.sh:61` 的基线挑选现在只看 `p1-route-proxy/patches/*.patch`，
