@@ -838,7 +838,7 @@ void local_node_file_config(gnb_conf_t *conf) {
     }
 }
 
-uint64_t gnb_get_node_num_from_file(gnb_conf_t *conf){
+gnb_uint64_t gnb_get_node_num_from_file(gnb_conf_t *conf){
     size_t n = 0;
     FILE *file;
     gnb_uuid_t uuid64;
