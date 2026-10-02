@@ -161,10 +161,14 @@ echo
 
 # ── 3. 导出固定发行源码提交 ──────────────────────────────────────
 echo "▸ [1/6] 导出发行源码提交 $RELEASE_SOURCE_COMMIT"
-command -v git >/dev/null 2>&1 || die "需要 git 才能导出固定提交"
-if ! git rev-parse --verify "${RELEASE_SOURCE_COMMIT}^{commit}" >/dev/null 2>&1; then
+command -v git >/dev/null 2>&1 || die "需要 git 才能导出固定提交（PATH=$PATH）"
+if ! _git_err=$(git rev-parse --verify "${RELEASE_SOURCE_COMMIT}^{commit}" 2>&1); then
+    # git 的原文必须一起报出来：BSD VM 里工作区是同步进去的，同一条「找不到提交」
+    # 可能是仓库没同步、可能是 dubious ownership，只报我们自己的话就得再猜一轮。
     die "本地找不到提交 $RELEASE_SOURCE_COMMIT。CI 必须 fetch-depth: 0 检全历史；
-       跨分支固定的提交还要先 fetch 到那个分支。缺提交时宁可失败，不要拿工作区凑数。"
+       跨分支固定的提交还要先 fetch 到那个分支。缺提交时宁可失败，不要拿工作区凑数。
+       git 说: $_git_err
+       仓库: $(git rev-parse --git-dir 2>&1) / $(git --version 2>&1)"
 fi
 git archive "$RELEASE_SOURCE_COMMIT" | tar -x -C "$WORK"
 if [ ! -f "$WORK/$MF" ]; then
@@ -354,12 +358,17 @@ EOF
         echo "错误: 没有 sha256sum / shasum / sha256 —— 写不出校验和就不出包" >&2
         exit 1
     fi
-    # Windows 交叉构建产物带 .exe；同一批四程序，扩展名一致
+    # Windows 交叉构建产物带 .exe；同一批四程序，扩展名一致。
+    # 后缀必须在分词之后逐名拼接：`$_sum $PROGS$_ext` 只会给最后一个名字带上 .exe
+    # （字面展开成 "gnb gnb_ctl gnb_es gnb_crypto.exe"），Windows 出包就是这么
+    # 报 gnb/gnb_ctl/gnb_es 三个 No such file 的。
     _ext=""
     [ -f gnb ] || _ext=".exe"
+    _files=""
+    for _p in $PROGS; do _files="$_files $_p$_ext"; done
     # shellcheck disable=SC2086
-    if ! $_sum $PROGS$_ext > SHA256SUMS; then
-        echo "错误: 算不出四程序 SHA256SUMS（缺哪个？）" >&2
+    if ! $_sum $_files > SHA256SUMS; then
+        echo "错误: 算不出四程序 SHA256SUMS（找的是:$_files）" >&2
         exit 1
     fi
 )
