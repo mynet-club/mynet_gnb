@@ -104,25 +104,26 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y build-essential wget zstd tar file
 
-      # arch → OpenWrt SDK profile（target 目录、SDK 包名、libc 后缀）
+      # arch → OpenWrt SDK profile（target 目录、SDK 包名、libc 后缀、包架构名）
       - name: Resolve SDK profile for ${{ matrix.arch }}
         id: sdk
         run: |
           set -euo pipefail
           case '${{ matrix.arch }}' in
-            arm64)     p='armsr/armv8     armsr-armv8      musl'     ;;
-            amd64)     p='x86/64          x86-64           musl'     ;;
-            mipsel)    p='ramips/mt7621   ramips-mt7621    musl'     ;;   # hard-float
-            mipsel-sf) p='ramips/mt7620   ramips-mt7620    musl'     ;;   # soft-float (MT7620 等无 FPU)
-            mips)      p='ath79/generic   ath79-generic    musl'     ;;   # soft-float (AR71xx/AR9xxx)
-            armv7)     p='bcm27xx/bcm2709 bcm27xx-bcm2709  musl_eabi' ;;  # hard-float
+            arm64)     p='armsr/armv8     armsr-armv8      musl       aarch64_generic'        ;;
+            amd64)     p='x86/64          x86-64           musl       x86_64'                 ;;
+            mipsel)    p='ramips/mt7621   ramips-mt7621    musl       mipsel_24kc'            ;;   # hard-float
+            mipsel-sf) p='ramips/mt7620   ramips-mt7620    musl       mipsel_24kc'            ;;   # soft-float (MT7620 等无 FPU)
+            mips)      p='ath79/generic   ath79-generic    musl       mips_24kc'              ;;   # soft-float (AR71xx/AR9xxx)
+            armv7)     p='bcm27xx/bcm2709 bcm27xx-bcm2709  musl_eabi  arm_cortex-a7_neon-vfpv4' ;;  # hard-float
             *) echo "OpenWrt 矩阵里没有 '${{ matrix.arch }}' 这个 target" >&2; exit 1 ;;
           esac
-          # shellcheck disable=SC2086  # 固定三列，按空白切开即可
+          # shellcheck disable=SC2086  # 固定四列，按空白切开即可
           set -- $p
-          echo "sdk_target=$1" >> "$GITHUB_OUTPUT"
-          echo "sdk_name=$2"   >> "$GITHUB_OUTPUT"
-          echo "sdk_libc=$3"   >> "$GITHUB_OUTPUT"
+          echo "sdk_target=$1"  >> "$GITHUB_OUTPUT"
+          echo "sdk_name=$2"    >> "$GITHUB_OUTPUT"
+          echo "sdk_libc=$3"    >> "$GITHUB_OUTPUT"
+          echo "pkg_arch=$4"    >> "$GITHUB_OUTPUT"
 
       - name: Cache OpenWrt SDK ${{ env.SDK_VERSION }} / ${{ matrix.arch }}
         id: sdk_cache
@@ -176,6 +177,34 @@ jobs:
           echo "staging_dir=$STAGING_DIR" >> "$GITHUB_OUTPUT"
           echo "strip=$STRIP" >> "$GITHUB_OUTPUT"
 
+      # 上游新的 Makefile.openwrt 在已 -DNO_GZIP=1 的情况下仍把 -lz 硬写进链接行
+      # （b1d4534 起）。按上游口径走：不动源码，在构建环境里补上该 target 的真实
+      # zlib —— 从官方仓库取 zlib-dev ipk，只用里面的 libz.a。
+      # 选静态那一份的原因：源码是 NO_GZIP 构建，一个 zlib 符号都不会被引用，
+      # libz.a 只负责让链接器闭嘴；换成 libz.so 就给设备凭空加了运行时依赖。
+      - name: Provide zlib for the SDK link step
+        id: zlib
+        run: |
+          set -euo pipefail
+          arch='${{ steps.sdk.outputs.pkg_arch }}'
+          base="https://downloads.openwrt.org/releases/${{ env.SDK_VERSION }}/packages/$arch/base"
+          listing="$(curl -fsSL "$base/")"
+          hits="$(printf '%s\n' "$listing" | grep -oE 'zlib-dev_[^"<>]*\.ipk' | sort -u || true)"
+          n="$(printf '%s' "$hits" | grep -c '' || true)"
+          if [ "$n" -ne 1 ]; then
+            echo "在 $base 找到 $n 个 zlib-dev ipk，无法确定该用哪个：" >&2
+            printf '%s\n' "$hits" >&2
+            exit 1
+          fi
+          ipk="$hits"
+          dest="$RUNNER_TEMP/zlib-$arch"
+          rm -rf "$dest"; mkdir -p "$dest"
+          curl -fsSL -o "$RUNNER_TEMP/$ipk" "$base/$ipk"
+          tar -xOf "$RUNNER_TEMP/$ipk" data.tar.gz | tar -xzf - -C "$dest" ./usr/lib/libz.a
+          ls -l "$dest/usr/lib/libz.a"
+          echo "libdir=$dest/usr/lib" >> "$GITHUB_OUTPUT"
+          echo "source=$base/$ipk"    >> "$GITHUB_OUTPUT"
+
       # 不 apply 补丁：gnb-dist.sh 从 packages/RELEASE-SOURCES 指定的固定提交导出源码树，
       # 校验源码身份 → make → 校验四程序与能力输出 → MANIFEST/SHA256SUMS → tgz（包名带通道段
       # 与否由 publish 类决定）。SDK 工具链通过 --make-var / 环境变量传入。
@@ -196,6 +225,7 @@ jobs:
             --arch '${{ matrix.arch }}' \
             --tag "${{ steps.tag.outputs.tag }}" \
             --make-var "CC=${{ steps.toolchain.outputs.cc }}" \
+            --make-var "LDFLAGS=-L${{ steps.zlib.outputs.libdir }}" \
             --make-var DEBUG=0 \
             $STRIP_ARG \
             --archive \
