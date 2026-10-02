@@ -48,8 +48,16 @@ lint_scripts() {
   done
 
   if command -v shellcheck >/dev/null 2>&1; then
-    _n=$(shellcheck "$ROOT"/scripts/*.sh "$ROOT"/packages/rebase.sh 2>&1 | grep -c '^In ' || true)
-    if [ "$_n" -eq 0 ]; then ok "shellcheck 无告警"; else bad "shellcheck 有 ${_n} 处告警"; fi
+    _sc=$(shellcheck "$ROOT"/scripts/*.sh "$ROOT"/packages/rebase.sh 2>&1 || true)
+    _n=$(printf '%s\n' "$_sc" | grep -c '^In ' || true)
+    if [ "$_n" -eq 0 ]; then
+      ok "shellcheck 无告警"
+    else
+      # 只报数量等于没报：CI 的 shellcheck 与本地的版本不同（实测 0.9.0 vs 0.11.0），
+      # 同一份脚本一边绿一边红，没有明细就只能盲改。连版本号一起打出来。
+      bad "shellcheck 有 ${_n} 处告警（shellcheck $(shellcheck --version | awk '/^version:/{print $2}')）"
+      printf '%s\n' "$_sc" | head -24 | sed 's/^/      /'
+    fi
   else
     skipped "shellcheck 未安装 —— 语法已由上面的 -n 覆盖，引用/风格类问题本次未检查"
   fi

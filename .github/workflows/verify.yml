@@ -92,14 +92,25 @@ jobs:
               rm -rf "$work"; failed="$failed $ch"; row "$ch" "${sha:0:7}" "✗ 导出失败"
               echo "::endgroup::"; continue
             fi
-            tdir="$(find "$work/packages" -maxdepth 3 -type d -name tests 2>/dev/null | head -1)"
-            if [ -z "$tdir" ]; then
-              echo "错误: $sha 的导出树缺补丁包的 tests 目录 —— 单测无从跑起，按失败处理"
-              rm -rf "$work"; failed="$failed $ch"; row "$ch" "${sha:0:7}" "✗ 导出树缺 tests"
+            # 发行提交是**纯源码树**（b1d4534 → ffdf816 只有作者面加我们的 proxy），
+            # 单测目录在工具树的 packages/ 里。把它按原来的相对路径放回导出树，
+            # tests/Makefile 的 ../../../.. 才指向出厂那份字节；否则测的是工作区当前 src/。
+            # ⚠️ 这里不能用 find 探目录：`find` 在缺目录时退出码非 0，而这个 step 跑在
+            # bash -e + pipefail 下，命令替换的失败会让整个 step 静默退出（CI 实测撞过：
+            # 组标记后一行输出都没有就 exit 1）。所有失败路径都写成显式 if，并打印原因。
+            if ! mkdir -p "$work/$(dirname "$pkg")" || ! cp -R "$pkg" "$work/$pkg"; then
+              echo "错误: 无法把 $pkg 放回 $sha 的导出树"
+              rm -rf "$work"; failed="$failed $ch"; row "$ch" "${sha:0:7}" "✗ 单测目录放不回导出树"
               echo "::endgroup::"; continue
             fi
-            ( cd "$tdir" && make )
-            rc=$?
+            tdir="$work/$pkg/tests"
+            if [ ! -d "$tdir" ]; then
+              echo "错误: $pkg/tests 不存在 —— 单测无从跑起，按失败处理"
+              rm -rf "$work"; failed="$failed $ch"; row "$ch" "${sha:0:7}" "✗ 补丁包没有 tests"
+              echo "::endgroup::"; continue
+            fi
+            rc=0
+            ( cd "$tdir" && make ) || rc=$?
             rm -rf "$work"
             echo "::endgroup::"
             if [ "$rc" -eq 0 ]; then
