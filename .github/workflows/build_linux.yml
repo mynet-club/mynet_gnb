@@ -83,17 +83,13 @@ jobs:
           - mipsel
           - mips64
           - mips64el
-          # riscv64 暂摘出轴（2026-10-02 裁定）：作者源码在 LP64 下类型冲突，
-          # src/gnb_conf_file.h:24 声明返回 gnb_uint64_t（gnb_def.h:22 = unsigned long long），
-          # src/gnb_conf_file.c:841 定义成 uint64_t（LP64 下 = unsigned long）→ 编译期
-          # conflicting types。这不是构建环境能绕的（不同于 OpenWrt 的 -lz），改它等于
-          # 往 git diff b1d4534..ffdf816 里加第九个文件。作者侧修好后取消注释即可，
-          # 下面的工具链分支（Setup musl / cross compiler）都还留着。
-          # 同一轮真跑（tag v1.6.8-dev）确认这不是 riscv 专属，冲突在数据模型本身：
-          # Linux amd64/arm64/mips64/mips64el 与 FreeBSD amd64 撞的是同一行，ILP32 的
-          # mips/mipsel/armv7-hardfp 三条腿全绿；macOS/Windows 侥幸编得过 —— 它们 SDK 里
-          # uint64_t 本身就是 unsigned long long。所以摘 riscv64 只挡住了这一类里的一例。
-          # - riscv64
+          # riscv64 曾被单独摘出这条轴，因为作者源码在 LP64 下有一处类型冲突
+          # （gnb_conf_file.h:24 声明 gnb_uint64_t，gnb_conf_file.c:841 定义 uint64_t，
+          # 而 gnb_def.h:22 把前者定为 unsigned long long）。那不是 riscv 专属：
+          # amd64/arm64/mips64/mips64el 与 FreeBSD amd64 撞的是同一行同一句。
+          # 现在这行修复在发行基线里（local_source_commit 98f8b4e），轴恢复完整 9 条腿。
+          # 摘单条架构不是修法：那是把问题藏起来，而且当时只挡住了这一类里的一例。
+          - riscv64
 
     steps:
       - name: Free disk space
