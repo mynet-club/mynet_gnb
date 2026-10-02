@@ -20,9 +20,6 @@ usage() {
   exit 1
 }
 
-# shellcheck disable=SC2329  # 供交互路径间接使用 / 预留
-is_tty() { [ -t 0 ] && [ -t 1 ]; }
-
 prompt() {
   local msg="$1"; shift
   local def="${1:-}"
