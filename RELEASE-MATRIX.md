@@ -9,7 +9,7 @@ for what CI is allowed to build is `packages/RELEASE-SOURCES` (read it with
 | channel | author identifier | local source commit | release source commit | patch package (provenance only) | publish |
 |---|---|---|---|---|---|
 | main | `c411f14ee647` | `2313dea3288c98b363b2994c348452ef74cb7107` | `UNSET` | none | production |
-| main-patched | ZIP SHA256 `1daa8c78cb07...` | `b1d45345bf63ad6a73453d9efb5fe3086178da1e` | `ffdf8163a91e296a67df44e1ec1bd629b3774f0f` | `packages/1.6.8-dev-74414d1/p1-route-proxy` | production |
+| main-patched | ZIP SHA256 `2454c303dabd...` | `98f8b4ef16afc11a0452b5e76b9b0f1ddb84f9c1` | `e0228d937d7fc7e8c8b61c531457442bb27e34a9` | `packages/1.6.8-dev/p1-route-proxy` | production |
 
 ## Baseline and patch set as of 2026-10-02
 

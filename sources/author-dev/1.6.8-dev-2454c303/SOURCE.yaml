@@ -1,0 +1,8 @@
+name: author-gnb-dev
+version: 1.6.8-dev
+archive: gnb-1.6.8-dev.zip
+sha256: 2454c303dabdb5e27a13a3fe19b0c4d5066a845d12b75e80172afa84e990c1ae
+received: 2026-10-02
+import_commit: c81b4598faeaf9b4532d1ce6b0d062b5062194d5
+branch: main
+supersedes: 1.6.8-dev-74414d1

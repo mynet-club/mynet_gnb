@@ -33,19 +33,27 @@
 # 并原生修了日志/UDP fd 泄漏 gnb_log_udp_close 与 mmap 的 MAP_FAILED 判失败）。
 # x-dev-patched 通道随之并掉：它和主线现在是同一棵树，三个通道降为两个。
 #
-# main-patched 现值 ffdf816 的来处（就是 main 线自己的两个提交）：
-#   基线提交 b1d4534 = 开发包根布局（树对象 958f3f9 == `74414d1:src`，
-#     且已用 sources/author-dev/1.6.8-dev-74414d1/gnb-1.6.8-dev.zip 重解压逐字节比对，
-#     ZIP SHA256 与下方 author_identity 逐字一致，差异只有 4 项 macOS 元数据）；
-#   proxy 提交 ffdf816 = 基线 + 8 个文件（Makefile.inc、Makefile.openwrt.inc、src/cli/gnb.c、
-#     src/gnb_core.c、src/gnb_pf.c、src/gnb_proxy.c、src/gnb_proxy.h、src/packet_filter/gnb_pf_route.c）。
-#   `git diff b1d4534..ffdf816` 就是我们在源码上的全部改动，多一个文件即为混入别的东西。
-#   实测：macOS arm64 `make -f Makefile.Darwin` 退出码 0，四程序齐全，`gnb -v` 末行打印 Features: proxy。
+# main-patched 两个 pin 的来处（都在 main 线上可达，不依赖未推送的分支）：
+#   local_source_commit 98f8b4e = 作者快照 c81b459 + 一行构建修复。
+#     c81b459 是 ZIP `2454c303…`（与下方 author_identity 逐字一致，存档在
+#     sources/author-dev/1.6.8-dev-2454c303/）按根布局导入的结果。导入约定：只取包内 gnb/
+#     铺到仓库根、丢掉 85 项 __MACOSX/、._* 元数据；已复解压逐字节比对，唯一差异是包里的
+#     空目录 gnb.xcodeproj/…/swiftpm/configuration/ —— git 不存空目录，不是漏文件。
+#   那一行构建修复：src/gnb_conf_file.c:841 的定义对齐 src/gnb_conf_file.h:24 的声明
+#     （uint64_t → gnb_uint64_t；gnb_def.h:22 把 gnb_uint64_t 定为 unsigned long long int）。
+#     不带它，LP64 各腿全停在 src/gnb_conf_file.o：Linux amd64/arm64/mips64/mips64el/riscv64、
+#     FreeBSD amd64、OpenWrt arm64/amd64。macOS 与 MinGW-w64 因其 SDK 里 uint64_t 本身就是
+#     unsigned long long 而看不见这行。实测（0.32：Ubuntu 24.04 / x86_64 / gcc 13.3.0 /
+#     glibc 2.39）`make -f Makefile.linux` 全程通过，gnb / gnb_es / gnb_crypto / gnb_ctl
+#     四程序齐备，`gnb --help` 打印 Features: proxy。
+#   release_source_commit e0228d9 = 基线 + proxy 提交，相对基线只动 8 个文件
+#     （Makefile.inc、Makefile.openwrt.inc、src/cli/gnb.c、src/gnb_core.c、src/gnb_pf.c、
+#     src/gnb_proxy.c、src/gnb_proxy.h、src/packet_filter/gnb_pf_route.c）。
+#   `git diff 98f8b4e..e0228d9` 就是我们在源码上的全部改动，冒出第 9 个文件即为混入别的东西。
+#   被替换的旧 pin（b1d4534 / ffdf816）仍在 main 线上可达，只是不再被引用。
 #
-# local_source_commit 填 b1d4534 而不是 74414d1：两者树内容逐字节相同，但 74414d1 只在
-# 作者快照的导入分支（x-dev/x-dev-v2，未推送）上可达，而 scripts/check.sh 的 test 段要在
-# CI 上把它导出成纯源码树再重放补丁串 —— 钉一个 Actions 取不到的提交，守护就是自缚。
-# 基线提交在 main 线上，所以钉它。
+# 接作者新快照的固定动作：在旧基线上做一个新的 sync 提交（保持能逐字节对着 ZIP 验），
+# 再重出「那一行构建修复 + proxy 提交」，最后换掉上面两个 sha。
 #
 # 未跟 x-dev-v2 那条线的两处差异，都是有意的：它的根 Makefile 比开发包多 21 行（不属于 proxy，
 # 没有带进来）；它的 dev 补丁串是 0001+0002 两份、文件名仍是旧的 gnb_proxy_conf，
@@ -60,4 +68,4 @@
 
 channel|author_identity|local_source_commit|release_source_commit|patch_package|src_version|features_mark|publish
 main|opengnb/opengnb@c411f14ee647|2313dea3288c98b363b2994c348452ef74cb7107|UNSET|none|1.6.8|absent|production
-main-patched|author-zip@1daa8c78cb07d48e116530798bf13fbfe7d5549410c23f5aa004ae8aff59c344|b1d45345bf63ad6a73453d9efb5fe3086178da1e|ffdf8163a91e296a67df44e1ec1bd629b3774f0f|packages/1.6.8-dev-74414d1/p1-route-proxy|1.6.8|present|production
+main-patched|author-zip@2454c303dabdb5e27a13a3fe19b0c4d5066a845d12b75e80172afa84e990c1ae|98f8b4ef16afc11a0452b5e76b9b0f1ddb84f9c1|e0228d937d7fc7e8c8b61c531457442bb27e34a9|packages/1.6.8-dev/p1-route-proxy|1.6.8|present|production
