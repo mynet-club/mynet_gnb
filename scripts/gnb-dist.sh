@@ -308,6 +308,56 @@ else
     [ -z "$FEATURES_LINE" ] || die "纯上游通道 $CHANNEL 的产物却报出 Features: proxy —— 源码身份与产物不一致"
 fi
 
+# ── 校验和：跨 OS 的探测与统一输出格式 ────────────────────────────
+# 探测靠**已知输入算已知结果**（"abc" 的 SHA-256 固定），而不是 `--help`：
+# BSD/OpenSSL 那一系（sha256、openssl dgst）不认 --help，会把它当文件名去打开而
+# 退出非 0 —— 实测 OpenBSD 7.9 明明能算校验和，却因这个探测报
+# 「没有 sha256sum / shasum / sha256」。
+# 输出格式一律自己写成 GNU 的 "<hex>  <文件名>"：BSD 默认那行
+# "SHA256 (gnb) = <hex>" 在别的机器上 `sha256sum -c` 认不了，而校验和文件是要
+# 跨平台核对的，六条线必须字节级同构。
+SHA256_ABC="ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+SHA256_TOOL=""
+
+# 从任意格式的输出里挑出那个 64 位十六进制串（不用 {64} 区间：老 awk 的 ERE 不支持）
+_hex64() {
+    awk '{ for (i = 1; i <= NF; i++)
+              if (length($i) == 64 && $i ~ /^[0-9a-fA-F]+$/) { print tolower($i); exit } }'
+}
+
+# 成功时把可用工具写进 SHA256_TOOL
+pick_sha256_tool() {
+    _probe="$(mktemp "${TMPDIR:-/tmp}/gnb-sha-probe.XXXXXX")" || return 1
+    printf 'abc' > "$_probe" || { rm -f "$_probe"; return 1; }
+    for _cand in "sha256sum" "shasum -a 256" "sha256" "openssl dgst -sha256" "digest -a sha256" "rhash --digest=sha256"; do
+        # shellcheck disable=SC2086  # 候选项本身就是「命令+参数」，必须分词
+        _h="$( $_cand "$_probe" 2>/dev/null | _hex64 )"
+        if [ "$_h" = "$SHA256_ABC" ]; then
+            rm -f "$_probe"
+            SHA256_TOOL="$_cand"
+            return 0
+        fi
+    done
+    rm -f "$_probe"
+    return 1
+}
+
+sha256_hex() {  # $1=文件 → stdout 纯 hex；算不出返回 1
+    [ -f "$1" ] || return 1
+    # shellcheck disable=SC2086
+    _h="$( $SHA256_TOOL "$1" 2>/dev/null | _hex64 )"
+    [ -n "$_h" ] || return 1
+    printf '%s\n' "$_h"
+}
+
+# 在**父 shell**里挑一次：SHA256_TOOL 是全局状态，写进命令替换/子 shell 的话打包段
+# （归档校验和）拿不到，六条线会退化成「包能出、MANIFEST 里 archive_sha256 空」。
+if pick_sha256_tool; then
+    echo "  校验和工具: $SHA256_TOOL"
+else
+    die "本机算不出 SHA-256（依次试过 sha256sum / shasum -a 256 / sha256 / openssl dgst -sha256 / digest / rhash，没有一个能对已知输入给出正确结果）—— 写不出校验和就不出包"
+fi
+
 # ── 7. MANIFEST + SHA256SUMS ────────────────────────────────────
 echo "▸ [5/6] 写 MANIFEST 与校验和"
 PATCH_COMMITS="none"
@@ -351,28 +401,18 @@ EOF
 
 (
     cd "$OUT" || exit 1
-    _sum=""
-    for _tool in "sha256sum" "shasum -a 256" "sha256"; do
-        # shellcheck disable=SC2086  # 探测本机可用的校验工具（名字带参数）
-        if $_tool --help >/dev/null 2>&1; then _sum="$_tool"; break; fi
-    done
-    if [ -z "$_sum" ]; then
-        echo "错误: 没有 sha256sum / shasum / sha256 —— 写不出校验和就不出包" >&2
-        exit 1
-    fi
     # Windows 交叉构建产物带 .exe；同一批四程序，扩展名一致。
-    # 后缀必须在分词之后逐名拼接：`$_sum $PROGS$_ext` 只会给最后一个名字带上 .exe
+    # 后缀必须在逐名循环里拼：`$_sum $PROGS$_ext` 只会给最后一个名字带上 .exe
     # （字面展开成 "gnb gnb_ctl gnb_es gnb_crypto.exe"），Windows 出包就是这么
     # 报 gnb/gnb_ctl/gnb_es 三个 No such file 的。
     _ext=""
     [ -f gnb ] || _ext=".exe"
-    _files=""
-    for _p in $PROGS; do _files="$_files $_p$_ext"; done
-    # shellcheck disable=SC2086
-    if ! $_sum $_files > SHA256SUMS; then
-        echo "错误: 算不出四程序 SHA256SUMS（找的是:$_files）" >&2
-        exit 1
-    fi
+    : > SHA256SUMS
+    for _p in $PROGS; do
+        _f="$_p$_ext"
+        _h="$(sha256_hex "$_f")" || { rm -f SHA256SUMS; die "算不出 $_f 的 SHA256SUMS（在 $OUT）"; }
+        printf '%s  %s\n' "$_h" "$_f" >> SHA256SUMS
+    done
 )
 
 # ── 8. 打包（可选） ─────────────────────────────────────────────
@@ -405,7 +445,7 @@ if [ "$MAKE_ARCHIVE" -eq 1 ]; then
     rm -rf "$STAGE"
     STAGE=""
     ARCHIVE_PATH="$DIST_DIR/$ARCHIVE_NAME"
-    ARCHIVE_SHA="$( cd "$DIST_DIR" && (sha256sum "$ARCHIVE_NAME" 2>/dev/null || shasum -a 256 "$ARCHIVE_NAME") | awk '{print $1}' )"
+    ARCHIVE_SHA="$(sha256_hex "$DIST_DIR/$ARCHIVE_NAME" || true)"
     if [ -z "$ARCHIVE_SHA" ]; then
         die "归档 $ARCHIVE_NAME 算不出 SHA256 —— 不能发一个没有校验值的包"
     fi
