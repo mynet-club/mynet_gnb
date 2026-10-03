@@ -52,9 +52,16 @@ runs:
         #
         # is_stable 按 tag 判：ctl 的 refreshLatestFlag() 只在 stable() 作用域里选 latest，
         # 而客户端取的就是 latest —— 把 -dev 预发布报成 stable，现网节点会被推着升到开发包。
+        #
+        # 值必须是 1/0，不能是 true/false：ctl 的校验是 'nullable|boolean'
+        # （Api/V1/ReleaseController.php:66），Laravel 的 boolean 规则只认
+        # true/false/1/0/"1"/"0" —— multipart 表单里一切值都是字符串，所以 "false"
+        # 和 "true" 都不在其中，10-03 实测五个轴的 publish 全被 422
+        # 「The is stable field must be true or false」打回。模型侧是 boolean cast
+        # （Models/Release.php:24），"0"/"1" 落到库里正好是 false/true。
         case "$REF_NAME" in
-          *-*) IS_STABLE=false ;;
-          *)   IS_STABLE=true  ;;
+          *-*) IS_STABLE=0 ;;
+          *)   IS_STABLE=1 ;;
         esac
 
         # 幂等判定（必须先于上传）：releases 表有
