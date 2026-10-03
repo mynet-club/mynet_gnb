@@ -128,8 +128,10 @@ runs:
           #   gnb_installer.lua:414 只认 a.os=="openwrt"、:252 只 alias {openwrt,linux}。
           # openwrt-sdk 那一档虽然存在，但没有任何消费者，发过去就是「下载面查得到、
           # 设备取不到」的死路。所以 SDK/musl 构建直接顶掉老的 glibc 那条线、占用 openwrt
-          # 这个名字，arch 标签用 ctl 的规范名（mipsel-softfp，规范化在 gnb-dist.sh；
-          # mipsel 与 mipsel-softfp 两条腿 10-03 已合成一条，见 build_openwrt.yml）。
+          # 这个名字。arch 标签必须等于设备侧映射表报出来的那个名字（mips 轴就是
+          # mipsel/mips，**不是** mipsel-softfp）：softfpFallback 只在上报 arch 一条记录
+          # 都没有时才触发，而 openwrt/mipsel 下面已经有老的 is_latest 稳定行 —— 发成
+          # softfp 名等于让设备永远命中旧版本。规范化在 gnb-dist.sh，矩阵见 build_openwrt.yml。
           #
           # openbsd 不再在这里 fail-loud：ctl 的 PLATFORMS/VALID_COMBINATIONS/parseFilename
           # 已加 openbsd。生产站那份代码是旧的、还没这个枚举时，这一档会得到 422 而不是
