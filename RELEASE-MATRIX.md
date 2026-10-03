@@ -133,9 +133,15 @@ reported arch (`DetectController.php:196-203`). `openwrt/mipsel` already holds `
 pinned to the stale release — the fallback can never fire for an arch that has a row. That was my
 first choice on 10-03, and a live probe of
 `GET /api/v2/detect/openwrt?distrib_arch=mipsel_24kc` (answer: `ctl_arch=mipsel`, download URL
-`gnb_openwrt_mipsel_v1.6.0.a.tgz`) disproved it. `mips` (ath79) is soft-float
-too but stays bare-labelled for the same reason: `mips_24kc` → `mips`, and the `gnb_openwrt_mips_*`
-rows already in the download face would stop resolving.
+`gnb_openwrt_mipsel_v1.6.0.a.tgz`) disproved it. `mips` (ath79) is soft-float too but stays
+bare-labelled for the same reason: `mips_24kc` → `mips`, and the `gnb_openwrt_mips_*` rows already
+in the download face would stop resolving.
+
+**Nothing needs re-posting for this correction.** The only artifact under the wrong name is the
+`v1.6.8-dev` leg, whose row is `is_stable=0`; `refreshLatestFlag()` selects latest only inside the
+`stable()` scope, so no device can ever be handed it — the corrected label takes effect with the
+next tag, and re-running the build just to rename a row devices cannot reach would burn the whole
+matrix's CI minutes for no reachable difference.
 
 ## Platform expectations
 
