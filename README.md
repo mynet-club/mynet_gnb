@@ -87,16 +87,25 @@ Bearer token = secret `CTL_RELEASE_UPLOAD_TOKEN`；对外取件路径
 `https://ctl.mynet.club/d/gnb/<文件名>`），校验文件按平台命名（`checksums-<platform>.txt`），
 避免多个 workflow 并发写同一个同名资产。以前那条 rsync 到 `download.mynet.club` 的链路已废弃
 （见 `mynet_ctl/docs/knowledge-base/v2-upgrade-plan.md`），不要再配 `DOWNLOAD_SSH_*`。
-CTL 的 `PLATFORMS` 里**没有 openbsd**，所以 BSD 轴的 openbsd 包 `ctl-publish` 会 fail-loud 报错，
-不静默丢包；要发就得改 ctl 枚举。包名里的 os 标签 → ctl 的 platform 枚举，映射只写在
-`.github/actions/ctl-publish/action.yml` 一处：**`openwrt` → `openwrt-sdk`**（2026-10-03 定，
-OpenWrt 轴是官方 SDK 24.10 的 musl 构建，arch 名 `mipsel-sf`/`mips-sf` 只在
-`VALID_COMBINATIONS['openwrt-sdk']` 里合法；`openwrt` 那一档的 arch 表是另一套，发过去必 422）。
-代价要认：客户端解析路径还写死 `openwrt`（`mynet_ctl/app/Http/Controllers/Api/V1/DetectController.php:193`
-与 `:209` 自己拼 `gnb_openwrt_<arch>_<version>.tgz`；`mynet_openwrt/luasrc/model/mynet/gnb_installer.lua:414`
-只认 `os=="openwrt"`、`:252` 只 alias `{openwrt,linux}`），所以 SDK 包在 ctl 上查得到、设备侧暂时够不着，
-要等 ctl/装机脚本认这个 platform。`mingw` 包也故意不发：ctl 的 `windows` 档 ext 是 `zip` 而产物是 tgz，
-arch 还要 `x86_64`→`amd64`，口径未定就先红着。
+上传 token 已在 CTL 现网铸好并配成该仓库的 repository secret（2026-10-03，token 只有
+`release:upload` 一条 ability，明文在本机 `~/.config/ctl/gnb-ci-release-upload.token`，库里只存哈希）。
+
+包名的三段（platform / arch / ext）一律落在 mynet_ctl `ReleaseDomainService` 的词表里，
+**规范化只做出包侧一次**（`scripts/gnb-dist.sh` 的「发行名规范化」段），不在 `ctl-publish`
+里再映射一遍：
+
+| 出包入参 | 包名用的名字 | 为什么 |
+|---|---|---|
+| `--os mingw --arch x86_64` | `windows` / `amd64`，扩展名 **`.zip`** | `PLATFORMS` 里只有 `windows`（`ReleaseDomainService.php:32-39`），它的 `ext=zip`；`ARCHITECTURES` 没有 `x86_64`（规范名 `amd64`）。记录的扩展名必须等于字节真实格式，否则 Windows 端拿到一个叫 `.zip` 的 tar，解包必炸 |
+| `--os openwrt`（SDK 24.10 / musl） | 仍叫 `openwrt`，软浮点 arch 用 **`mipsel-softfp`** | 设备侧只查 `openwrt`：`DetectController.php:193` 写死 `$platform='openwrt'`、`:209` 自己拼 `gnb_openwrt_<arch>_<version>.tgz`，`:236-239` 只在 `mipsel ↔ mipsel-softfp` 这类 arch 变体之间回退、从不换 platform；`gnb_installer.lua:414` 只认 `os=="openwrt"`。`openwrt-sdk` 那一档（`:35`/`:82`）虽然枚举里有，但没有任何消费者，发过去就是「查得到、取不到」的死路。**OpenWrt 从此不再有 glibc 那条线**：SDK/musl 构建顶掉老的 `openwrt` glibc 包，沿用同一个 platform 名 |
+| `--os openbsd` | — | `PLATFORMS` 没有 `openbsd`，`ctl-publish` 直接 fail-loud 报错，不静默丢包；要发得先改 ctl 枚举 |
+
+`ctl-publish` 对每个包都要求 HTTP 201，任何一包非 201 就让 job 红（缺 token、命名不符、
+传输失败、422 都算）—— 静默跳过 `exit 0` 正是上一轮「tag 发了、下载面一个包都没有」的成因。
+`variant` 一律不传：`ReleaseService::upload()` 会把 variant 当第 5 参喂 `generateFilename(…, $ext)`，
+非空 variant 直接变成文件扩展名，而 `parseFilename` 只认 `tgz|zip|tar.gz|ipk` ⇒ 记录建得出来却下不到。
+`is_stable` 按 tag 判（带 `-` 的预发布报 false）：`refreshLatestFlag()` 只在 `stable()` 作用域里选
+latest，把 `-dev` 报成 stable 会推着现网节点升到开发包；代价是 dev 包不会成为 latest，要取它得按版本显式取。
 
 本地守护
 ------

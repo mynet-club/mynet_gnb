@@ -127,7 +127,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: gnb-${{ matrix.channel }}-windows-x86_64
-          path: .pkg/${{ steps.tag.outputs.tag }}/*/*.tgz
+          path: |
+            .pkg/${{ steps.tag.outputs.tag }}/*/*.tgz
+            .pkg/${{ steps.tag.outputs.tag }}/*/*.zip
           if-no-files-found: error
 
   publish:
@@ -171,16 +173,18 @@ jobs:
               exit 1
             fi
             cls="$(sh scripts/release-sources.sh require "$ch" publish)"
-            # download-artifact@v4 保留了上传时的相对路径，tgz 其实在 <类>/ 子目录里，
+            # download-artifact@v4 保留了上传时的相对路径，归档其实在 <类>/ 子目录里，
             # 所以 find 不限深度；归类只认目录名对应的通道，不认这个子目录名。
-            find "$d" -type f -name '*.tgz' -exec mv -t .release/"$cls"/ {} +
+            # 扩展名必须两种都收：windows 按 ctl 的 windows 档出 .zip，漏了它就会被下面的
+            # rm -rf "$d" 连目录一起删掉，而 _left 只数 tgz 时看不出来。
+            find "$d" -type f \( -name '*.tgz' -o -name '*.zip' \) -exec mv -t .release/"$cls"/ {} +
             rm -rf "$d"
           done
-          _left=$(find .release -type f -name '*.tgz' \
+          _left=$(find .release -type f \( -name '*.tgz' -o -name '*.zip' \) \
                     -not -path '.release/production/*' -not -path '.release/internal/*' | wc -l | tr -d ' ')
           if [ "$_left" -ne 0 ]; then
             echo "有 $((_left)) 个产物未归类，拒绝静默发行：" >&2
-            find .release -type f -name '*.tgz' \
+            find .release -type f \( -name '*.tgz' -o -name '*.zip' \) \
               -not -path '.release/production/*' -not -path '.release/internal/*' >&2
             exit 1
           fi
@@ -191,12 +195,14 @@ jobs:
         run: |
           set -euo pipefail
           cd .release/production
-          if [ -z "$(ls -A *.tgz 2>/dev/null)" ]; then
+          shopt -s nullglob
+          PKGS=(*.tgz *.zip)
+          if [ ${#PKGS[@]} -eq 0 ]; then
             echo "本批没有生产通道产物，跳过 checksums"; exit 0
           fi
           # 按平台命名，不共用 checksums.txt：四个 workflow 并发往同一个 Release 传同名文件
           # 会撞（tag v1.6.8-dev 实测 HTTP 422 ReleaseAsset.name already exists）。
-          sha256sum *.tgz > checksums-windows.txt
+          sha256sum "${PKGS[@]}" > checksums-windows.txt
           cat checksums-windows.txt
 
       - name: Create/Update GitHub Release (clobber same-name assets only)

@@ -1,7 +1,8 @@
 name: Publish production packages to CTL
 description: >
-  把 .release/production 里的 tgz 逐个 POST 到 ctl.mynet.club 的 release 上传接口，
-  也就是我方真正的下载面（/d/gnb/<文件名>）。download.mynet.club 已废弃，不再往它 rsync。
+  把 .release/production 里的归档包（tgz，windows 为 zip）逐个 POST 到 ctl.mynet.club 的
+  release 上传接口，也就是我方真正的下载面（/d/gnb/<文件名>）。
+  download.mynet.club 已废弃，不再往它 rsync。
 inputs:
   token:
     description: CTL 的 release:upload Bearer token（来自 secret）
@@ -29,9 +30,10 @@ runs:
       run: |
         set -euo pipefail
         shopt -s nullglob
-        TGZS=("$SRC_DIR"/*.tgz)
-        if [ ${#TGZS[@]} -eq 0 ]; then
-          echo "本批没有生产通道 tgz（internal/ 的开发包按设计不进下载面），跳过。"
+        # 两种扩展名都要收：windows 按 ctl 的 windows 档出 .zip，其余 .tgz。
+        PKGS=("$SRC_DIR"/*.tgz "$SRC_DIR"/*.zip)
+        if [ ${#PKGS[@]} -eq 0 ]; then
+          echo "本批没有生产通道归档包（internal/ 的开发包按设计不进下载面），跳过。"
           exit 0
         fi
 
@@ -54,18 +56,18 @@ runs:
           *-*) IS_STABLE=false ;;
           *)   IS_STABLE=true  ;;
         esac
-        echo "tag=$REF_NAME is_stable=$IS_STABLE 待上传 ${#TGZS[@]} 个包"
+        echo "tag=$REF_NAME is_stable=$IS_STABLE 待上传 ${#PKGS[@]} 个包"
 
         failed=""
-        for f in "${TGZS[@]}"; do
+        for f in "${PKGS[@]}"; do
           name="$(basename "$f")"
           # 命名契约的 SSOT 是 mynet_ctl 的 ReleaseDomainService::{generateFilename,parseFilename}：
-          # {name}_{platform}_{arch}_{version}.{ext}。platform 用显式枚举（和 ctl 一致），
-          # 否则贪婪匹配会把 openwrt_mipsel 切成两段。mingw 也要匹配到 —— 它对应 ctl 的
-          # windows，不能让它掉进「命名不符」那种看不出原因的错里。
-          # arch 段放宽到允许下划线，专门为了让 windows 那条腿走到下面自己的报错里 ——
-          # 它现在叫 x86_64，而 ctl 的 ARCHITECTURES 只有 amd64（ReleaseDomainService.php:84）。
-          if [[ ! "$name" =~ ^gnb_(linux|openwrt|darwin|freebsd|openbsd|mingw)_([a-z0-9_-]+)_(v[0-9A-Za-z.-]+)\.tgz$ ]]; then
+          # {name}_{platform}_{arch}_{version}.{ext}。这里 platform 用显式枚举（和 ctl 一致），
+          # 否则贪婪匹配会把 openwrt_mipsel 切成两段。platform/arch/ext 的规范化在出包侧做一次
+          # （scripts/gnb-dist.sh 的「发行名规范化」段：mingw→windows、x86_64→amd64、windows 的
+          # ext 按 PLATFORMS 取 zip）—— 包名与 GitHub Release 资产名从源头就同一个契约，
+          # 不在这里再映射一遍，两处映射迟早对不上。
+          if [[ ! "$name" =~ ^gnb_(linux|openwrt|darwin|windows|freebsd|openbsd)_([a-z0-9-]+)_(v[0-9A-Za-z.-]+)\.(tgz|zip)$ ]]; then
             echo "ERROR: 包名 $name 不符合 ctl 命名契约，拒绝上传（要改改 gnb-dist.sh 的包名段，不是改这里）" >&2
             failed="$failed $name(命名)"
             continue
@@ -74,36 +76,15 @@ runs:
           arch="${BASH_REMATCH[2]}"
           version="${BASH_REMATCH[3]}"
 
-          # 出包侧的 os 标签 → ctl 的 platform 枚举，映射只写在这一处。
-          # openwrt → openwrt-sdk：我们这条轴是拿官方 OpenWrt SDK 24.10 编的（musl 动态链接，
-          # build_openwrt.yml:1-5），arch 名 mipsel-sf / mips-sf 只在
-          # VALID_COMBINATIONS['openwrt-sdk']（ReleaseDomainService.php:82）里合法 —— 发到
-          # platform=openwrt 会 422，因为那一档的 arch 表是另一套（mipsel-softfp/mipsel-muslsf，
-          # :81），里面根本没有 mipsel-sf。
-          #
-          # 代价（现网侧还没跟上，别当它不存在）：客户端解析路径写死了 openwrt ——
-          #   mynet_ctl/app/Http/Controllers/Api/V1/DetectController.php:193（$platform='openwrt'）
-          #   并自己在 :209 拼 gnb_openwrt_<arch>_<version>.tgz；
-          #   mynet_openwrt/luasrc/model/mynet/gnb_installer.lua:414 只认 a.os=="openwrt"、
-          #   :252 只 alias {openwrt,linux}，从不匹配 openwrt-sdk。
-          # 也就是说这批包进了下载面但设备侧查不到，要等 ctl/装机脚本认这个新 platform。
-          if [ "$platform" = "openwrt" ]; then
-            platform="openwrt-sdk"
-          fi
-
-          if [ "$platform" = "mingw" ]; then
-            # 不映射成 windows 是故意的：ctl 的 PLATFORMS['windows'].ext='zip'
-            # （ReleaseDomainService.php:37），而我们出的是 tgz —— 映射过去会建出一个
-            # 扩展名叫 .zip、字节是 tar 的记录，Windows 端解包必炸。而且 arch 也要
-            # 从 x86_64 改成 amd64（windows 的合法 arch 只有 amd64/arm64，:84）。
-            # 这三样（扩展名 / arch 名 / 谁解包）是发行口径问题，等你定，不自己拍。
-            echo "ERROR: $name 是 mingw 包，ctl 侧对应 windows，但口径未定：" >&2
-            echo "       PLATFORMS['windows'].ext=zip 而产物是 tgz，arch 也要 x86_64→amd64。" >&2
-            echo "       定完再补映射；这里保持红，不静默丢包。" >&2
-            failed="$failed $name(windows口径未定)"
-            continue
-          fi
-
+          # OpenWrt 这一档**不改名叫 openwrt-sdk**（2026-10-03 定）：设备侧只查 openwrt ——
+          #   DetectController.php:193 写死 $platform='openwrt'，:209 自己拼
+          #   gnb_openwrt_<arch>_<version>.tgz，softfpFallback(:236-239) 只在
+          #   mipsel ↔ mipsel-softfp 这类 arch 变体之间回退，从不换 platform；
+          #   gnb_installer.lua:414 只认 a.os=="openwrt"、:252 只 alias {openwrt,linux}。
+          # openwrt-sdk 那一档虽然存在（ReleaseDomainService.php:35/:82），但没有任何消费者，
+          # 发过去就是「下载面查得到、设备取不到」的死路。所以 SDK/musl 构建直接顶掉老的
+          # glibc 那条线、占用 openwrt 这个名字，arch 标签用 ctl 的规范名（mipsel-softfp，
+          # 规范化在 gnb-dist.sh）。
           if [ "$platform" = "openbsd" ]; then
             echo "ERROR: ctl 的 PLATFORMS 枚举里没有 openbsd，这条包发不出去。" >&2
             echo "       要么 ctl 侧加枚举，要么 openbsd 不进下载面 —— 先记失败，不静默丢。" >&2
@@ -111,8 +92,12 @@ runs:
             continue
           fi
 
+          # Accept: application/json 不是装饰：实测不带它时 ctl 的校验失败按 web 请求处理，
+          # 回 302 + 一段「Redirecting to https://ctl.mynet.club」HTML，日志里只剩一个
+          # 看不出原因的 302；带上它才回 422 + JSON 错误字段（今天拿真 token 实测过）。
           if ! resp="$(curl -sS --max-time 300 --retry 2 \
                         -H "Authorization: Bearer ${CTL_TOKEN}" \
+                        -H 'Accept: application/json' \
                         -F product=gnb -F "version=${version}" -F "platform=${platform}" -F "arch=${arch}" \
                         -F "is_stable=${IS_STABLE}" \
                         -F "changelog=GitHub Actions ${REF_NAME} (${RUN_URL})" \
@@ -139,4 +124,4 @@ runs:
           echo "有包没发出去：$failed" >&2
           exit 1
         fi
-        echo "全部 ${#TGZS[@]} 个包已进 CTL 下载面。"
+        echo "全部 ${#PKGS[@]} 个包已进 CTL 下载面。"

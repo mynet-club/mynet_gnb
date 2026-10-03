@@ -68,17 +68,22 @@ production package nor be registered as one. Publish jobs classify by artifact d
 name against `RELEASE-SOURCES`, never by filename glob, and only production packages are
 POSTed to CTL (`POST /api/v2/releases`, Bearer token from secret `CTL_RELEASE_UPLOAD_TOKEN`,
 served back as `https://ctl.mynet.club/d/gnb/<filename>`). The old rsync to the deprecated
-`download.mynet.club` is gone. The os label in our package name maps to ctl's `platform`
-enum in exactly one place, `.github/actions/ctl-publish/action.yml`: **`openwrt` →
-`openwrt-sdk`** (decided 2026-10-03 — that axis builds with the official OpenWrt SDK 24.10
-against musl, and `mipsel-sf`/`mips-sf` are only valid under `openwrt-sdk`; posting them as
-`openwrt` is a 422 because that enum's arch list is a different set). Consumers still ask for
-`openwrt` (`DetectController.php:193`/`:209`, `gnb_installer.lua:414`/`:252`), so SDK packages
-are on the download face but not yet reachable from devices until ctl/installer learns the new
-platform. Two registry gaps are surfaced as failures instead of skipped:
-ctl's `PLATFORMS` has no `openbsd`, and `mingw` is not mapped to `windows` because
-`PLATFORMS['windows'].ext` is `zip` while we ship tgz (its arch list also wants
-`amd64`, not `x86_64`).
+`download.mynet.club` is gone. All three name fields (platform / arch / ext) are normalized
+**once, on the packaging side** (`scripts/gnb-dist.sh`, the release-name normalization block);
+`ctl-publish` never re-maps them, so the GitHub asset name and the ctl record are the same
+contract from the start. Two decisions from 2026-10-03:
+**windows ships `.zip`** — `PLATFORMS` has `windows` with `ext=zip`
+(`ReleaseDomainService.php:32-39`) and `ARCHITECTURES` has no `x86_64` (canonical `amd64`);
+the recorded extension must match the actual bytes or a Windows client unpacks a tar named
+`.zip`. **OpenWrt stays on platform `openwrt`** — every consumer asks for `openwrt`
+(`DetectController.php:193` hardcodes it and builds `gnb_openwrt_<arch>_<version>.tgz` at
+`:209`; `:236-239` only falls back between arch variants such as `mipsel` ↔ `mipsel-softfp`,
+never between platforms; `gnb_installer.lua:414` only accepts `os=="openwrt"`), while
+`openwrt-sdk` (`:35`/`:82`) has no consumer at all — posting there would be "listed but
+unfetchable". So the SDK/musl builds take over the `openwrt` slot and the glibc line for
+OpenWrt is dropped; the soft-float leg is labelled `mipsel-softfp` (our old `mipsel-sf` was
+self-invented and is not in ctl's vocabulary). One gap remains a hard failure rather than a
+skip: ctl's `PLATFORMS` has no `openbsd`, so BSD-axis OpenBSD packages cannot be published.
 
 ## Platform expectations
 
@@ -86,9 +91,9 @@ ctl's `PLATFORMS` has no `openbsd`, and `mingw` is not mapped to `windows` becau
 |---|---|---|
 | `build_darwin.yml` | darwin | `clang -arch x86_64` / `-arch arm64`, one job per arch |
 | `build_linux.yml` | linux | cross toolchains; `-static` passed as full `GNB_LDFLAGS`/`GNB_ES_LDFLAGS` replacement, then asserted per binary. Shares arch *names* with the OpenWrt axis but not the build: glibc + `-static` here, SDK musl + dynamic there |
-| `build_windows.yml` | windows (dist label: `mingw`) | MinGW-w64 cross, `.exe` outputs; not posted to CTL yet, see the gap note above |
+| `build_windows.yml` | windows (dist `--os mingw --arch x86_64` → package name `windows`/`amd64`, `.zip`) | MinGW-w64 cross, `.exe` outputs |
 | `build_bsd.yml` | freebsd / openbsd | built inside `vmactions` VMs with `gmake`; openbsd has no CTL enum |
-| `build_openwrt.yml` | openwrt → posted as `openwrt-sdk` | official SDK 24.10, dynamically linked musl (device provides the runtime) |
+| `build_openwrt.yml` | openwrt | official SDK 24.10, dynamically linked musl (device provides the runtime); this replaces the old glibc line, `openwrt-sdk` is unused |
 | `verify.yml` | — | tooling lint + proxy unit tests run inside each channel's own exported release source tree |
 
 `scripts/gnb-dist.sh` is the shared implementation; the workflows only supply platform,

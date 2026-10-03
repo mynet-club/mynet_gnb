@@ -13,7 +13,7 @@
 #      存在性与通道期望一致（Features 行只由源码提交决定，本脚本绝不插入）
 #   4. 按平台 Makefile 构建，四程序必须来自这一次构建
 #   5. 可选 strip，然后从**构建出的二进制**验收能力输出（present/absent 由通道决定）
-#   6. 写 MANIFEST + SHA256SUMS，可选打 tgz（包名规则见打包段注释）
+#   6. 写 MANIFEST + SHA256SUMS，可选打归档包（tgz；windows 为 zip，包名规则见打包段注释）
 #
 # 本脚本不打补丁、不改功能源码、不生成补丁包。任何校验失败都阻断发行。
 # CI 各平台 job 与本地共用这一条流水线；本地产物不作为发布证据。
@@ -132,8 +132,26 @@ case "$AUTHOR_IDENTITY" in
 esac
 if [ "$MAKE_ARCHIVE" -eq 1 ] && [ -z "$ARCH" ]; then
     # 不带 arch 的包名会被 ctl 的严格正则误解析（arch 段会吃掉 version），出包必须显式给 arch
-    die "打 tgz 必须传 --arch（发行注册表按 {name}_{platform}_{arch}_{version} 解析）"
+    die "打归档包必须传 --arch（发行注册表按 {name}_{platform}_{arch}_{version}.{ext} 解析）"
 fi
+# ── 发行名规范化（只在包名这一层，不动 --os 的 Makefile 选择）─────────
+# 包名 {name}_{platform}_{arch}_{version}.{ext} 的三段都必须落在 mynet_ctl
+# ReleaseDomainService 的词表里，否则注册表解析不出这条记录：
+#   platform  mingw 不在 PLATFORMS 内，windows 才是；
+#   arch      ARCHITECTURES 没有 x86_64/aarch64，规范名是 amd64/arm64；
+#   ext       PLATFORMS['windows'].ext = zip，其余 tgz —— 记录的扩展名必须和字节的
+#             真实格式一致，否则 Windows 端拿到一个叫 .zip 的 tar 包，解包必炸。
+# Makefile 仍按 OS 选（Makefile.mingw_x86_64 是作者的文件名，不改它）。
+REL_OS="$OS"
+ARCH_EXT=tgz
+if [ "$OS" = "mingw" ]; then
+    REL_OS=windows
+    ARCH_EXT=zip
+fi
+case "$ARCH" in
+    x86_64)  ARCH=amd64 ;;
+    aarch64) ARCH=arm64 ;;
+esac
 ARCH_TAG="${ARCH:+_$ARCH}"
 # 交叉编译要用同工具链的 strip；命令不存在就早失败，不要白编一遍才发现。
 # 晚一步的 strip 循环里用 `|| true` 容忍单文件失败（如只读产物），但工具本身必须在。
@@ -429,11 +447,14 @@ if [ "$MAKE_ARCHIVE" -eq 1 ]; then
     #     [a-z0-9-]+ 不含下划线，这类包在 ctl 侧必然解析失败而被跳过 —— 这正是
     #     「开发包不能进生产下载目录、也不能覆盖生产包」的强制形式（计划§8C）。
     if [ "$PUBLISH" = "production" ]; then
-        ARCHIVE_NAME="gnb_${OS}${ARCH_TAG}_${TAG}.tgz"
+        ARCHIVE_NAME="gnb_${REL_OS}${ARCH_TAG}_${TAG}.${ARCH_EXT}"
     else
-        ARCHIVE_NAME="gnb_${OS}${ARCH_TAG}_${CHANNEL}_${TAG}.tgz"
+        ARCHIVE_NAME="gnb_${REL_OS}${ARCH_TAG}_${CHANNEL}_${TAG}.${ARCH_EXT}"
     fi
     mkdir -p "$DIST_DIR"
+    # zip 的 -r 会把条目记成相对当前目录的路径，所以取绝对路径再进 STAGE 打，
+    # 否则包里的 bin/ 会落到 .pkg 的相对位置上去（DIST_DIR 在 CI 里传的是相对路径）。
+    DIST_ABS="$(cd "$DIST_DIR" && pwd)"
     STAGE="$(mktemp -d "${TMPDIR:-/tmp}/gnb-stage.XXXXXX")"
     mkdir -p "$STAGE/bin"
     for prog in $PROGS; do
@@ -441,11 +462,16 @@ if [ "$MAKE_ARCHIVE" -eq 1 ]; then
         [ -f "$OUT/$prog.exe" ] && cp "$OUT/$prog.exe" "$STAGE/bin/$prog.exe"
     done
     cp "$OUT/MANIFEST" "$OUT/SHA256SUMS" "$STAGE/"
-    tar -czf "$DIST_DIR/$ARCHIVE_NAME" -C "$STAGE" bin MANIFEST SHA256SUMS
+    if [ "$ARCH_EXT" = "zip" ]; then
+        command -v zip >/dev/null 2>&1 || die "出 zip 需要 zip 命令（Windows 包按 ctl 的 windows 档必须是 zip）"
+        (cd "$STAGE" && zip -q -r "$DIST_ABS/$ARCHIVE_NAME" bin MANIFEST SHA256SUMS)
+    else
+        tar -czf "$DIST_ABS/$ARCHIVE_NAME" -C "$STAGE" bin MANIFEST SHA256SUMS
+    fi
     rm -rf "$STAGE"
     STAGE=""
-    ARCHIVE_PATH="$DIST_DIR/$ARCHIVE_NAME"
-    ARCHIVE_SHA="$(sha256_hex "$DIST_DIR/$ARCHIVE_NAME" || true)"
+    ARCHIVE_PATH="$DIST_ABS/$ARCHIVE_NAME"
+    ARCHIVE_SHA="$(sha256_hex "$DIST_ABS/$ARCHIVE_NAME" || true)"
     if [ -z "$ARCHIVE_SHA" ]; then
         die "归档 $ARCHIVE_NAME 算不出 SHA256 —— 不能发一个没有校验值的包"
     fi

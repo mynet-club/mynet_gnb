@@ -295,7 +295,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: gnb-${{ matrix.channel }}-linux-${{ matrix.arch }}
-          path: .pkg/${{ steps.tag.outputs.tag }}/*/*.tgz
+          path: |
+            .pkg/${{ steps.tag.outputs.tag }}/*/*.tgz
+            .pkg/${{ steps.tag.outputs.tag }}/*/*.zip
           if-no-files-found: error
 
   publish:
@@ -343,16 +345,18 @@ jobs:
               exit 1
             fi
             cls="$(sh scripts/release-sources.sh require "$ch" publish)"
-            # download-artifact@v4 保留了上传时的相对路径，tgz 其实在 <类>/ 子目录里，
+            # download-artifact@v4 保留了上传时的相对路径，归档其实在 <类>/ 子目录里，
             # 所以 find 不限深度；归类只认目录名对应的通道，不认这个子目录名。
-            find "$d" -type f -name '*.tgz' -exec mv -t .release/"$cls"/ {} +
+            # 扩展名必须两种都收：windows 按 ctl 的 windows 档出 .zip，漏了它就会被下面的
+            # rm -rf "$d" 连目录一起删掉，而 _left 只数 tgz 时看不出来。
+            find "$d" -type f \( -name '*.tgz' -o -name '*.zip' \) -exec mv -t .release/"$cls"/ {} +
             rm -rf "$d"
           done
-          _left=$(find .release -type f -name '*.tgz' \
+          _left=$(find .release -type f \( -name '*.tgz' -o -name '*.zip' \) \
                     -not -path '.release/production/*' -not -path '.release/internal/*' | wc -l | tr -d ' ')
           if [ "$_left" -ne 0 ]; then
             echo "有 $((_left)) 个产物未归类，拒绝静默发行：" >&2
-            find .release -type f -name '*.tgz' \
+            find .release -type f \( -name '*.tgz' -o -name '*.zip' \) \
               -not -path '.release/production/*' -not -path '.release/internal/*' >&2
             exit 1
           fi
@@ -364,14 +368,16 @@ jobs:
         run: |
           set -euo pipefail
           cd .release/production
-          if [ -z "$(ls -A *.tgz 2>/dev/null)" ]; then
+          shopt -s nullglob
+          PKGS=(*.tgz *.zip)
+          if [ ${#PKGS[@]} -eq 0 ]; then
             echo "本批没有生产通道产物，跳过 checksums"; exit 0
           fi
           # 每个平台一个校验文件，不共用 checksums.txt：darwin/linux/openwrt/windows 四个
           # workflow 会同时往同一个 Release 传这个同名文件（tag v1.6.8-dev 实测
           # HTTP 422 ReleaseAsset.name already exists），而「下载-合并-回传」是读-改-写，
           # 并发下会静默丢条目。校验文件按平台命名就没有竞争，也不需要 gh 凭据。
-          sha256sum *.tgz > checksums-linux.txt
+          sha256sum "${PKGS[@]}" > checksums-linux.txt
           cat checksums-linux.txt
 
       - name: Create/Update GitHub Release (clobber same-name assets only)
