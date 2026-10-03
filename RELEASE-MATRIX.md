@@ -1,6 +1,6 @@
 # GNB release matrix
 
-Two channels, one build pipeline. CI never applies patches and never edits functional
+One channel, one build pipeline. CI never applies patches and never edits functional
 source: it exports the channel's fixed `release_source_commit`, verifies the source
 identity, builds, checks the binaries, packages and publishes. The single source of truth
 for what CI is allowed to build is `packages/RELEASE-SOURCES` (read it with
@@ -8,8 +8,16 @@ for what CI is allowed to build is `packages/RELEASE-SOURCES` (read it with
 
 | channel | author identifier | local source commit | release source commit | patch package (provenance only) | publish |
 |---|---|---|---|---|---|
-| main | `c411f14ee647` | `2313dea3288c98b363b2994c348452ef74cb7107` | `UNSET` | none | production |
 | main-patched | ZIP SHA256 `2454c303dabd...` | `98f8b4ef16afc11a0452b5e76b9b0f1ddb84f9c1` | `e0228d937d7fc7e8c8b61c531457442bb27e34a9` | `packages/1.6.8-dev/p1-route-proxy` | production |
+
+Since 2026-10-04 this is the only line we maintain: our own version. When the author ships a
+new snapshot we merge our two commits onto it (the fixed sequence in the `RELEASE-SOURCES`
+header) and the merged tree becomes the mainline — no parallel control channel. The former
+pure-upstream `main` channel is deleted: its `release_source_commit` was permanently `UNSET`
+(the only pure-upstream commit on this line, `2313dea`, is the old nested layout), so all five
+workflows only ever printed "skipped" for it and it never produced a package. The pure-upstream
+tree is still reachable via `git archive 2313dea:src`, which is what `scripts/check.sh`'s test
+section uses to prove the patch set can still be re-applied.
 
 ## Baseline and patch set as of 2026-10-02
 
@@ -39,9 +47,9 @@ empty directory) plus one proxy commit touching eight files. `git diff 98f8b4e..
 complete list of our source changes — if that ever shows a ninth file, something unrelated has
 entered the line.
 
-`main` is not buildable yet: a root-layout pure-upstream commit has to be prepared first. The
-`plan` job of every workflow records such a channel as skipped in the run summary instead of
-guessing a commit.
+A channel whose `release_source_commit` is `UNSET` is still recorded as skipped by every
+workflow's `plan` job rather than guessed at — the mechanism stays even though no channel
+currently uses it.
 
 Author identifier and local commit are separate namespaces and must never be substituted
 for one another.
@@ -206,18 +214,25 @@ return path, `proxy.conf` hot reload / deletion / syntax-error rollback on a run
 `route.conf` versus `proxy.conf` priority, full table / fragmentation / PONG expiry /
 multi-worker concurrency.
 
-Blocked on the source-preparation line, not on build tooling:
+Nothing is blocked on the source-preparation line any more. The one item that used to sit here —
+`main` having no `release_source_commit` — was closed on 2026-10-04 by deleting that channel
+(see the top of this file); the `UNSET` guard itself stays in `release-sources.sh` and in every
+`plan` job, so a channel added later without a pinned commit still fails loudly instead of
+being guessed at.
 
-- `main` has no `release_source_commit` (it remains `UNSET`, so CI refuses to build it rather
-  than inventing a commit).
-- Naming: the dev-snapshot baseline's `version` file still says `1.6.8`, so a raw tag would make
-  the production archive `gnb_<os>_<arch>_v1.6.8.tgz` — indistinguishable from one built off the
-  released 1.6.8 source, and `mynet_ctl` parses that filename into its release registry. Ruled
-  on 2026-10-02 (developer): archives from a non-released identity carry `-dev`. The rule lives
-  in `gnb-dist.sh`'s tag block and keys off `author_identity` only — `opengnb/opengnb@…` gets no
-  suffix, anything else (an author ZIP) gets `-dev`, and an unrecognized new identity form
-  defaults to `-dev` rather than silently colliding. Verified against the parser's regexes:
-  `gnb_darwin_arm64_v1.6.8-dev.tgz` splits to name=gnb / platform=darwin / arch=arm64 /
-  version=`v1.6.8-dev`, and `validateVersion()` accepts that version string.
+One standing naming decision: the dev-snapshot baseline's `version` file still says `1.6.8`, so
+a raw tag would make the production archive `gnb_<os>_<arch>_v1.6.8.tgz` — indistinguishable from
+one built off the released 1.6.8 source, and `mynet_ctl` parses that filename into its release
+registry. Ruled on 2026-10-02 (developer): archives from a non-released identity carry `-dev`.
+The rule lives in `gnb-dist.sh`'s tag block and keys off `author_identity` only —
+`opengnb/opengnb@…` gets no suffix, anything else (an author ZIP) gets `-dev`, and an
+unrecognized new identity form defaults to `-dev` rather than silently colliding. Verified
+against the parser's regexes: `gnb_darwin_arm64_v1.6.8-dev.tgz` splits to name=gnb /
+platform=darwin / arch=arm64 / version=`v1.6.8-dev`, and `validateVersion()` accepts that
+version string. Kept after the 2026-10-04 collapse to one channel: the original motive (two
+channels colliding on one version string) is gone, but the suffix is still what stops our
+builds from claiming to be the author's released 1.6.8 on devices. `is_stable` does not read
+it — `ctl-publish` derives that from the **tag** name (any `-` means 0), so `v1.6.8-dev` is
+always beta and pushing stable network-wide needs a separate suffix-free tag.
 
 

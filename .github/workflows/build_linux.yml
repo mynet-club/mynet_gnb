@@ -13,9 +13,10 @@ on:
 env:
   PROJECT: gnb
   BASE_URL: "https://download.mynet.club/gnb"
-  # 想出的通道。未指定发行源码提交的通道会被 plan job 标为 skipped 并写进 summary，
+  # 想出的通道（2026-10-04 起只有一条，理由见 packages/RELEASE-SOURCES 头部）。
+  # 未指定发行源码提交的通道会被 plan job 标为 skipped 并写进 summary，
   # 补丁/源码准备线在 packages/RELEASE-SOURCES 填上 commit 后，它自动进入矩阵。
-  CHANNELS: main,main-patched
+  CHANNELS: main-patched
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -326,8 +327,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p .release/production .release/internal
-          # 通道名互为前缀（main / main-patched），不能拿 gnb-<channel>-* 做模式匹配：
-          # 那会让 main 把 main-patched 的产物按 main 的类别搬走。这里对每个产物目录取
+          # 通道名可能互为前缀（历史上就有 main / main-patched），所以不能拿 gnb-<channel>-*
+          # 直接模式匹配：那会让短名把长名的产物按自己的类别搬走。这里对每个产物目录取
           # 「匹配得上的最长通道名」，类别一律回 SSOT 的 publish 字段查。
           for d in .release/*/; do
             name="$(basename "$d")"

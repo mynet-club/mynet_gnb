@@ -18,7 +18,9 @@ on:
       - main
 
 env:
-  CHANNELS: main,main-patched
+  # 只有一条通道（2026-10-04 裁定，理由见 packages/RELEASE-SOURCES 头部）：
+  # 我们维护自己这一条版本线，作者新版本以合并方式进来，不另开纯上游对照通道。
+  CHANNELS: main-patched
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

@@ -18,8 +18,13 @@ CI 从不 apply 它。真相只有提交和 `packages/RELEASE-SOURCES`。
 
 | 通道 | 作者身份 | 基线提交 | 发行提交 | 状态 |
 |---|---|---|---|---|
-| `main` | 上游 `opengnb/opengnb@c411f14ee647` | `2313dea` | `UNSET` | 尚无根布局纯上游提交，CI 拒绝构建而非替你推断 |
-| `main-patched` | 作者开发 ZIP `2454c303dabd…` | `98f8b4ef16af` | `e0228d937d7f` | 生产发行 |
+| `main-patched` | 作者开发 ZIP `2454c303dabd…` | `98f8b4ef16af` | `e0228d937d7f` | 生产发行（唯一通道） |
+
+2026-10-04 起只维护这一条通道，就是我们自己的版本线。作者出新版本时不是另开对照通道，
+而是按下面的固定动作把我们的改动合并到作者新版本上，合并结果即主线。原来的纯上游对照
+通道 `main` 已删除：它的 `release_source_commit` 一直是 `UNSET`（本线唯一的纯上游提交
+`2313dea` 是旧嵌套布局），五个 workflow 只会打印「跳过」，从来出不了包。纯上游树仍然
+可达（`git archive 2313dea:src`），`scripts/check.sh` 的 test 段用它验补丁链能否重放。
 
 不变量：`git diff <基线提交>..<发行提交>` 就是我们在源码上的全部改动（当前 8 个 proxy 文件），
 **冒出第 9 个文件即为混入别的东西**。`release_source_commit` 为 `UNSET` 的通道必须失败。

@@ -14,7 +14,8 @@ env:
   PROJECT: gnb
   SDK_VERSION: "24.10.0"
   SDK_GCC: "13.3.0"
-  CHANNELS: main,main-patched
+  # 通道口径见 packages/RELEASE-SOURCES（2026-10-04 起只有一条）。
+  CHANNELS: main-patched
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -311,8 +312,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p .release/production .release/internal
-          # 通道名互为前缀（main / main-patched），不能拿 gnb-<channel>-* 做模式匹配：
-          # 那会让 main 把 main-patched 的产物按 main 的类别搬走。这里对每个产物目录取
+          # 通道名可能互为前缀（历史上就有 main / main-patched），所以不能拿 gnb-<channel>-*
+          # 直接模式匹配：那会让短名把长名的产物按自己的类别搬走。这里对每个产物目录取
           # 「匹配得上的最长通道名」，类别一律回 SSOT 的 publish 字段查。
           for d in .release/*/; do
             name="$(basename "$d")"

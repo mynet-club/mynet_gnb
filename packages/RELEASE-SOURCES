@@ -22,20 +22,22 @@
 #   features_mark          构建后的 gnb 二进制里 "Features: proxy" 应为 present 还是 absent
 #   publish                production = 可进生产下载目录；internal = 只进 GitHub Release/CI 产物
 #
-# main 通道的 UNSET 说明：本线现有纯源码提交 2313dea 是**旧嵌套布局**（src/Makefile.*、src/src/），
-# 与本文件要求的根布局构建入口不兼容；根布局提交（c8d7175 起）的 src/ 已含 MyNet proxy 代码。
-# 「根布局 + 纯上游 src」的固定提交属于源码准备，不是发行脚本能推断或生成的，
-# 需补丁/同步线补一次提交后把 full sha 填进来。
-# 归一方法已实测可用：`git archive 2313dea:src` 导出的就是根布局上游树
-# （Makefile.inc 在导出根、源码在其 src/ 下），scripts/check.sh 的 test 段用的正是这条判断。
+# 2026-10-04 开发者裁定：**只维护一条通道**（main-patched），就是我们自己的版本。
+# 作者出新版本时的动作不是「另开一条对照通道」，而是把我们的改动合并到作者新版本上，
+# 合并结果就是主线（下面的「接作者新快照的固定动作」）。原来的纯上游对照通道 main
+# 随之删除：它的 release_source_commit 一直是 UNSET（本线唯一的纯上游提交 2313dea 是
+# 旧嵌套布局，与本文件要求的根布局构建入口不兼容；根布局提交的 src/ 又已含 proxy 代码），
+# 五个 workflow 只会打印「跳过」，从来出不了包 —— 一条永远不出包的通道不产生任何信息。
+# 纯上游树并没有丢：`git archive 2313dea:src` 导出的就是根布局上游树，
+# scripts/check.sh 的 test 段（补丁链能否重新应用）用的正是这条判断。
 #
 # 2026-10-02 换基（开发者裁定）：**发行基线 = 作者开发包**，不再是上游 1.6.8 发行版。
 # 理由：热重启只在做发包里做完了（发行版 `2313dea` 里 `gnb_hot_restart_prepare` 只是命令字，
 # 没有停/起 worker 的实现；开发包 `74414d1` 有 gnb_worker_wait_worker_started/stoped 全套，
 # 并原生修了日志/UDP fd 泄漏 gnb_log_udp_close 与 mmap 的 MAP_FAILED 判失败）。
-# x-dev-patched 通道随之并掉：它和主线现在是同一棵树，三个通道降为两个。
+# x-dev-patched 通道当天先并掉（它和主线是同一棵树），main 通道 10-04 并掉。
 #
-# main-patched 两个 pin 的来处（都在 main 线上可达，不依赖未推送的分支）：
+# 本通道两个 pin 的来处（都在 main 线上可达，不依赖未推送的分支）：
 #   local_source_commit 98f8b4e = 作者快照 c81b459 + 一行构建修复。
 #     c81b459 是 ZIP `2454c303…`（与下方 author_identity 逐字一致，存档在
 #     sources/author-dev/1.6.8-dev-2454c303/）按根布局导入的结果。导入约定：只取包内 gnb/
@@ -54,20 +56,25 @@
 #   `git diff 98f8b4e..e0228d9` 就是我们在源码上的全部改动，冒出第 9 个文件即为混入别的东西。
 #   被替换的旧 pin（b1d4534 / ffdf816）仍在 main 线上可达，只是不再被引用。
 #
-# 接作者新快照的固定动作：在旧基线上做一个新的 sync 提交（保持能逐字节对着 ZIP 验），
-# 再重出「那一行构建修复 + proxy 提交」，最后换掉上面两个 sha。
+# 接作者新快照的固定动作（单通道下这就是**唯一**的升级路径，也是主线怎么前进的定义）：
+#   1. 在旧基线上做一个新的 sync 提交，把作者新快照铺进来（保持能逐字节对着 ZIP 验）；
+#   2. 在它上面重出「那一行构建修复 + proxy 提交」—— 合并结果就是新的主线；
+#   3. 换掉上面两个 sha，打新 tag 出包。
+# 换句话说：我们只维护自己这一条版本线，作者的新版本以合并的方式进来，不另开对照通道。
 #
 # 未跟 x-dev-v2 那条线的两处差异，都是有意的：它的根 Makefile 比开发包多 21 行（不属于 proxy，
 # 没有带进来）；它的 dev 补丁串是 0001+0002 两份、文件名仍是旧的 gnb_proxy_conf，
 # 本发行提交用的是合并后的一份、文件名定稿 gnb_proxy。
 #
-# 产物版本号里的 -dev（2026-10-02 开发者裁定）：开发包快照的 version 文件仍写 1.6.8，
-# 出包若不标记就会和真正从已发行 1.6.8 出的包**同名**，而 mynet_ctl 的发布表按
-# {name}_{platform}_{arch}_{version} 解析文件名（ReleaseDomainService.php:196），
-# 两边会撞成同一版本。规则写在 gnb-dist.sh 的 tag 段、只认 author_identity：
+# 产物版本号里的 -dev（2026-10-02 开发者裁定，10-04 单通道后保留）：开发包快照的 version
+# 文件仍写 1.6.8，但它不是作者已发行的 1.6.8 —— 出包若不加标记，设备上看到的版本号就会
+# 声称自己是那个发行版（mynet_ctl 的发布表还按 {name}_{platform}_{arch}_{version} 解析文件名，
+# ReleaseDomainService.php:196，同名即同版本）。所以尾缀是**身份诚实**问题，不只是防撞名。
+# 规则写在 gnb-dist.sh 的 tag 段、只认 author_identity：
 # `opengnb/opengnb@…` 是已发行上游 → 不加后缀；其它（作者 ZIP）→ 版本号尾缀 -dev。
 # 未识别的新身份形态默认带 -dev，宁可多标不可漏标。
+# 注意 is_stable 不看这个尾缀：ctl-publish 按 **tag 名**判（含 `-` 即 0），
+# 所以 v1.6.8-dev 永远是 beta，正式推全网要另打不带后缀的 tag。
 
 channel|author_identity|local_source_commit|release_source_commit|patch_package|src_version|features_mark|publish
-main|opengnb/opengnb@c411f14ee647|2313dea3288c98b363b2994c348452ef74cb7107|UNSET|none|1.6.8|absent|production
 main-patched|author-zip@2454c303dabdb5e27a13a3fe19b0c4d5066a845d12b75e80172afa84e990c1ae|98f8b4ef16afc11a0452b5e76b9b0f1ddb84f9c1|e0228d937d7fc7e8c8b61c531457442bb27e34a9|packages/1.6.8-dev/p1-route-proxy|1.6.8|present|production
