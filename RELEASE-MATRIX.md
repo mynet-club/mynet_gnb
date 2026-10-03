@@ -85,6 +85,14 @@ OpenWrt is dropped; the soft-float leg is labelled `mipsel-softfp` (our old `mip
 self-invented and is not in ctl's vocabulary). One gap remains a hard failure rather than a
 skip: ctl's `PLATFORMS` has no `openbsd`, so BSD-axis OpenBSD packages cannot be published.
 
+**Open question, deliberately not decided here:** the `mipsel` (ramips/mt7621) and
+`mipsel-softfp` (ramips/mt7620) legs are the *same* ABI, not hard- vs soft-float — measured
+10-03 from a CI artifact, mt7621's ELF interpreter is `/lib/ld-musl-mipsel-sf.so.1` and both
+profiles publish as `mipsel_24kc`. Renaming `mipsel` would therefore collide with the
+existing soft-float leg, and `mips` (ath79) is soft-float too. Kept as-is: ctl's fallback is
+symmetric (`mipsel` ↔ `mipsel-softfp`), so devices resolve either label. Merging the legs or
+relabeling is a release-policy call.
+
 ## Platform expectations
 
 | workflow | platform | note |

@@ -121,12 +121,20 @@ jobs:
           case '${{ matrix.arch }}' in
             arm64)     p='armsr/armv8     armsr-armv8      musl       aarch64_generic'        ;;
             amd64)     p='x86/64          x86-64           musl       x86_64'                 ;;
-            mipsel)    p='ramips/mt7621   ramips-mt7621    musl       mipsel_24kc'            ;;   # hard-float
+            mipsel)    p='ramips/mt7621   ramips-mt7621    musl       mipsel_24kc'            ;;   # 实测也是软浮点，见下面注释
             mipsel-softfp) p='ramips/mt7620   ramips-mt7620    musl       mipsel_24kc'      ;;   # soft-float (MT7620 等无 FPU)
             mips)      p='ath79/generic   ath79-generic    musl       mips_24kc'              ;;   # soft-float (AR71xx/AR9xxx)
             armv7)     p='bcm27xx/bcm2709 bcm27xx-bcm2709  musl_eabi  arm_cortex-a7_neon-vfpv4' ;;  # hard-float
             *) echo "OpenWrt 矩阵里没有 '${{ matrix.arch }}' 这个 target" >&2; exit 1 ;;
           esac
+          # mipsel 与 mipsel-softfp 这两条腿**是同一个 ABI**，不是「硬/软」之分：
+          # 10-03 从 CI artifact 里取出实编二进制 `file` 读回 —— mt7621 那条的
+          # interpreter 是 /lib/ld-musl-mipsel-sf.so.1（sf = soft-float），和 mt7620 那条
+          # 一字不差；两边的 OpenWrt 包架构名也都是 mipsel_24kc。所以 mipsel 这个标签
+          # 描述的是 SDK profile（mt7621），不是浮点 ABI。改名会撞名（两条腿都只能叫
+          # mipsel-softfp），要不要合腿 + 要不要把 mips 也标成 mips-softfp 是发行口径，
+          # 等他定；在此之前保持现名 —— ctl 的 softfpFallback 是双向的
+          # （DetectController.php:236-239：mipsel ↔ mipsel-softfp），设备报哪个都取得到。
           # shellcheck disable=SC2086  # 固定四列，按空白切开即可
           set -- $p
           echo "sdk_target=$1"  >> "$GITHUB_OUTPUT"
