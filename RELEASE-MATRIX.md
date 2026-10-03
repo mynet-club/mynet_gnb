@@ -68,19 +68,27 @@ production package nor be registered as one. Publish jobs classify by artifact d
 name against `RELEASE-SOURCES`, never by filename glob, and only production packages are
 POSTed to CTL (`POST /api/v2/releases`, Bearer token from secret `CTL_RELEASE_UPLOAD_TOKEN`,
 served back as `https://ctl.mynet.club/d/gnb/<filename>`). The old rsync to the deprecated
-`download.mynet.club` is gone. Two registry gaps are surfaced as failures instead of skipped:
-ctl's `PLATFORMS` has no `openbsd`, and `VALID_COMBINATIONS['openwrt']` accepts
-`mipsel-softfp`/`mipsel-muslsf` but not `mipsel-sf` (that arch belongs to `openwrt-sdk`).
+`download.mynet.club` is gone. The os label in our package name maps to ctl's `platform`
+enum in exactly one place, `.github/actions/ctl-publish/action.yml`: **`openwrt` →
+`openwrt-sdk`** (decided 2026-10-03 — that axis builds with the official OpenWrt SDK 24.10
+against musl, and `mipsel-sf`/`mips-sf` are only valid under `openwrt-sdk`; posting them as
+`openwrt` is a 422 because that enum's arch list is a different set). Consumers still ask for
+`openwrt` (`DetectController.php:193`/`:209`, `gnb_installer.lua:414`/`:252`), so SDK packages
+are on the download face but not yet reachable from devices until ctl/installer learns the new
+platform. Two registry gaps are surfaced as failures instead of skipped:
+ctl's `PLATFORMS` has no `openbsd`, and `mingw` is not mapped to `windows` because
+`PLATFORMS['windows'].ext` is `zip` while we ship tgz (its arch list also wants
+`amd64`, not `x86_64`).
 
 ## Platform expectations
 
 | workflow | platform | note |
 |---|---|---|
 | `build_darwin.yml` | darwin | `clang -arch x86_64` / `-arch arm64`, one job per arch |
-| `build_linux.yml` | linux | cross toolchains; `-static` passed as full `GNB_LDFLAGS`/`GNB_ES_LDFLAGS` replacement, then asserted per binary |
-| `build_windows.yml` | windows | MinGW-w64 cross, `.exe` outputs |
-| `build_bsd.yml` | freebsd / openbsd | built inside `vmactions` VMs with `gmake` |
-| `build_openwrt.yml` | openwrt | official SDK 24.10, dynamically linked musl (device provides the runtime) |
+| `build_linux.yml` | linux | cross toolchains; `-static` passed as full `GNB_LDFLAGS`/`GNB_ES_LDFLAGS` replacement, then asserted per binary. Shares arch *names* with the OpenWrt axis but not the build: glibc + `-static` here, SDK musl + dynamic there |
+| `build_windows.yml` | windows (dist label: `mingw`) | MinGW-w64 cross, `.exe` outputs; not posted to CTL yet, see the gap note above |
+| `build_bsd.yml` | freebsd / openbsd | built inside `vmactions` VMs with `gmake`; openbsd has no CTL enum |
+| `build_openwrt.yml` | openwrt → posted as `openwrt-sdk` | official SDK 24.10, dynamically linked musl (device provides the runtime) |
 | `verify.yml` | — | tooling lint + proxy unit tests run inside each channel's own exported release source tree |
 
 `scripts/gnb-dist.sh` is the shared implementation; the workflows only supply platform,

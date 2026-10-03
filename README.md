@@ -87,9 +87,16 @@ Bearer token = secret `CTL_RELEASE_UPLOAD_TOKEN`；对外取件路径
 `https://ctl.mynet.club/d/gnb/<文件名>`），校验文件按平台命名（`checksums-<platform>.txt`），
 避免多个 workflow 并发写同一个同名资产。以前那条 rsync 到 `download.mynet.club` 的链路已废弃
 （见 `mynet_ctl/docs/knowledge-base/v2-upgrade-plan.md`），不要再配 `DOWNLOAD_SSH_*`。
-CTL 的 `PLATFORMS` 里**没有 openbsd**，而 `VALID_COMBINATIONS['openwrt']` 里只有
-`mipsel-softfp`/`mipsel-muslsf`、没有 `mipsel-sf`（那是 `openwrt-sdk` 的 arch）——
-`ctl-publish` 动作对这两类包 fail-loud 报错，不静默丢包；要发就得改 ctl 枚举或改我们的 arch 标签。
+CTL 的 `PLATFORMS` 里**没有 openbsd**，所以 BSD 轴的 openbsd 包 `ctl-publish` 会 fail-loud 报错，
+不静默丢包；要发就得改 ctl 枚举。包名里的 os 标签 → ctl 的 platform 枚举，映射只写在
+`.github/actions/ctl-publish/action.yml` 一处：**`openwrt` → `openwrt-sdk`**（2026-10-03 定，
+OpenWrt 轴是官方 SDK 24.10 的 musl 构建，arch 名 `mipsel-sf`/`mips-sf` 只在
+`VALID_COMBINATIONS['openwrt-sdk']` 里合法；`openwrt` 那一档的 arch 表是另一套，发过去必 422）。
+代价要认：客户端解析路径还写死 `openwrt`（`mynet_ctl/app/Http/Controllers/Api/V1/DetectController.php:193`
+与 `:209` 自己拼 `gnb_openwrt_<arch>_<version>.tgz`；`mynet_openwrt/luasrc/model/mynet/gnb_installer.lua:414`
+只认 `os=="openwrt"`、`:252` 只 alias `{openwrt,linux}`），所以 SDK 包在 ctl 上查得到、设备侧暂时够不着，
+要等 ctl/装机脚本认这个 platform。`mingw` 包也故意不发：ctl 的 `windows` 档 ext 是 `zip` 而产物是 tgz，
+arch 还要 `x86_64`→`amd64`，口径未定就先红着。
 
 本地守护
 ------
