@@ -78,13 +78,20 @@ contract from the start. Two decisions from 2026-10-03:
 the recorded extension must match the actual bytes or a Windows client unpacks a tar named
 `.zip`. **OpenWrt stays on platform `openwrt`** — every consumer asks for `openwrt`
 (`DetectController.php:193` hardcodes it and builds `gnb_openwrt_<arch>_<version>.tgz` at
-`:209`; `:236-239` only falls back between arch variants such as `mipsel` ↔ `mipsel-softfp`,
+`:209`; `:228-241` only falls back between arch variants such as `mipsel` ↔ `mipsel-softfp`,
 never between platforms; `gnb_installer.lua:414` only accepts `os=="openwrt"`), while
 `openwrt-sdk` (`:35`/`:82`) has no consumer at all — posting there would be "listed but
 unfetchable". So the SDK/musl builds take over the `openwrt` slot and the glibc line for
 OpenWrt is dropped; the soft-float leg is labelled `mipsel-softfp` (our old `mipsel-sf` was
-self-invented and is not in ctl's vocabulary). One gap remains a hard failure rather than a
-skip: ctl's `PLATFORMS` has no `openbsd`, so BSD-axis OpenBSD packages cannot be published.
+self-invented and is not in ctl's vocabulary). **`openbsd` is being added to ctl's vocabulary**
+(`ReleaseDomainService::PLATFORMS` + `VALID_COMBINATIONS`, and `parseFilename`'s platform
+alternation) so the BSD axis can publish it — but the deployed app under `ctl.mynet.club` is
+older than the repo (`/data/app/mynet.club/ctl`, not a git checkout, last touched 2026-03-25;
+its `PLATFORMS` has neither `openbsd` nor `openwrt-sdk`, and its `parseFilename` platform group
+is `([a-z]+)`). `ReleaseService::validateUpload()` enforces `validatePlatform`/
+`validateArch`/`validateCombination` (`app/Services/Release/ReleaseService.php:140-155`), so an
+OpenBSD upload is a **422 until that enum lands in production**: deploy the enum first, then
+re-push the tag.
 
 **Re-pushing a tag does not re-post packages that already match.** `releases` carries
 `unique(product, version, platform, arch, variant)`
@@ -99,13 +106,18 @@ what nodes are already pulling. A 500 that the pre-check did not predict is almo
 `status=0` row: disabled releases leave the fetch path but still hold the unique index, and
 clearing them needs a `release:manage` token.
 
-**Open question, deliberately not decided here:** the `mipsel` (ramips/mt7621) and
-`mipsel-softfp` (ramips/mt7620) legs are the *same* ABI, not hard- vs soft-float — measured
-10-03 from a CI artifact, mt7621's ELF interpreter is `/lib/ld-musl-mipsel-sf.so.1` and both
-profiles publish as `mipsel_24kc`. Renaming `mipsel` would therefore collide with the
-existing soft-float leg, and `mips` (ath79) is soft-float too. Kept as-is: ctl's fallback is
-symmetric (`mipsel` ↔ `mipsel-softfp`), so devices resolve either label. Merging the legs or
-relabeling is a release-policy call.
+**The two mipsel legs are merged into one (`mipsel-softfp`, 2026-10-03).** `mipsel`
+(ramips/mt7621) and `mipsel-softfp` (ramips/mt7620) were never hard- vs soft-float: measured
+10-03 from a CI artifact, mt7621's ELF interpreter is `/lib/ld-musl-mipsel-sf.so.1` — identical
+to mt7620 — and both profiles publish as package arch `mipsel_24kc`. The old `mipsel` label
+described the SDK *profile*, not the ABI, so the two legs published the same ABI twice and the
+extra row was a label only devices guessing `mipsel` would ever fetch. The merged leg keeps the
+mt7621 profile (more devices) under ctl's canonical soft-float name; devices still reporting
+`mipsel` resolve it through ctl's symmetric fallback
+(`DetectController.php:228-241`: `mipsel` ↔ `mipsel-softfp`). `mips` (ath79) is soft-float too
+but stays bare-labelled: it has a single leg, so relabeling it `mips-softfp` resolves no
+ambiguity while breaking the fetch path for the `gnb_openwrt_mips_*` rows already in the
+download face — and its fallback is symmetric as well (`mips` ↔ `mips-softfp`).
 
 ## Platform expectations
 
@@ -114,8 +126,8 @@ relabeling is a release-policy call.
 | `build_darwin.yml` | darwin | `clang -arch x86_64` / `-arch arm64`, one job per arch |
 | `build_linux.yml` | linux | cross toolchains; `-static` passed as full `GNB_LDFLAGS`/`GNB_ES_LDFLAGS` replacement, then asserted per binary. Shares arch *names* with the OpenWrt axis but not the build: glibc + `-static` here, SDK musl + dynamic there |
 | `build_windows.yml` | windows (dist `--os mingw --arch x86_64` → package name `windows`/`amd64`, `.zip`) | MinGW-w64 cross, `.exe` outputs |
-| `build_bsd.yml` | freebsd / openbsd | built inside `vmactions` VMs with `gmake`; openbsd has no CTL enum |
-| `build_openwrt.yml` | openwrt | official SDK 24.10, dynamically linked musl (device provides the runtime); this replaces the old glibc line, `openwrt-sdk` is unused |
+| `build_bsd.yml` | freebsd / openbsd | built inside `vmactions` VMs with `gmake`; openbsd needs ctl's enum deployed before it uploads (see above) |
+| `build_openwrt.yml` | openwrt | official SDK 24.10, dynamically linked musl (device provides the runtime); this replaces the old glibc line, `openwrt-sdk` is unused. One mipsel leg (`mipsel-softfp`), not two |
 | `verify.yml` | — | tooling lint + proxy unit tests run inside each channel's own exported release source tree |
 
 `scripts/gnb-dist.sh` is the shared implementation; the workflows only supply platform,

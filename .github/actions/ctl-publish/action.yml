@@ -116,19 +116,17 @@ runs:
 
           # OpenWrt 这一档**不改名叫 openwrt-sdk**（2026-10-03 定）：设备侧只查 openwrt ——
           #   DetectController.php:193 写死 $platform='openwrt'，:209 自己拼
-          #   gnb_openwrt_<arch>_<version>.tgz，softfpFallback(:236-239) 只在
-          #   mipsel ↔ mipsel-softfp 这类 arch 变体之间回退，从不换 platform；
+          #   gnb_openwrt_<arch>_<version>.tgz，softfpFallback(:228-241) 只在
+          #   mipsel ↔ mipsel-softfp 这类 arch 变体之间**双向**回退，从不换 platform；
           #   gnb_installer.lua:414 只认 a.os=="openwrt"、:252 只 alias {openwrt,linux}。
-          # openwrt-sdk 那一档虽然存在（ReleaseDomainService.php:35/:82），但没有任何消费者，
-          # 发过去就是「下载面查得到、设备取不到」的死路。所以 SDK/musl 构建直接顶掉老的
-          # glibc 那条线、占用 openwrt 这个名字，arch 标签用 ctl 的规范名（mipsel-softfp，
-          # 规范化在 gnb-dist.sh）。
-          if [ "$platform" = "openbsd" ]; then
-            echo "ERROR: ctl 的 PLATFORMS 枚举里没有 openbsd，这条包发不出去。" >&2
-            echo "       要么 ctl 侧加枚举，要么 openbsd 不进下载面 —— 先记失败，不静默丢。" >&2
-            failed="$failed $name(openbsd无枚举)"
-            continue
-          fi
+          # openwrt-sdk 那一档虽然存在，但没有任何消费者，发过去就是「下载面查得到、
+          # 设备取不到」的死路。所以 SDK/musl 构建直接顶掉老的 glibc 那条线、占用 openwrt
+          # 这个名字，arch 标签用 ctl 的规范名（mipsel-softfp，规范化在 gnb-dist.sh；
+          # mipsel 与 mipsel-softfp 两条腿 10-03 已合成一条，见 build_openwrt.yml）。
+          #
+          # openbsd 不再在这里 fail-loud：ctl 的 PLATFORMS/VALID_COMBINATIONS/parseFilename
+          # 已加 openbsd。生产站那份代码是旧的、还没这个枚举时，这一档会得到 422 而不是
+          # 静默丢 —— 校验在 ReleaseService::validateUpload()（:140-155），照样把 job 打红。
 
           # 已经在下载面上且字节一致的就不再发一遍（见上面那段幂等判定）。
           if [ "$HAVE_SHA" -eq 1 ]; then
