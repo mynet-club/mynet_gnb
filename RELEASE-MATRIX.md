@@ -106,10 +106,19 @@ so a real deploy keeps it.
 measures the public fetch path (`/d/gnb/<filename>`) first, and the verdict is **two-level**:
 404 → upload; 200 with identical SHA256 → `SKIP`; 200 with different SHA256 → compare **build
 provenance** (the fixed fields of the `MANIFEST` inside each archive: `release_source_commit`,
-`channel`, `publish`, `src_version`, `os`, `arch`, `makefile`, and the two Features marks) —
+`channel`, `publish`, `src_version`, `os`, `makefile`, and the two Features marks) —
 same provenance → `SKIP` (a rebuild of the same commit; the existing bytes stay served, nothing
 is overwritten), different or unreadable provenance → hard failure, because content under an
 existing version number means a new tag, not an overwrite of what nodes are already pulling.
+
+`arch` is deliberately **not** in that field set (learned the hard way on the 10-03 re-run): the
+mips legs publish one build under two names, and the in-archive `arch` is whatever the build was
+labelled, so a twin's `arch` differs from the filename it is being compared against — including it
+reported a legitimate rebuild as a source conflict. The filename is the authority for `arch`, and
+it is already one component of the unique key. For the same reason the remote object is fetched
+into a temp **directory under its real filename**: the two readers are dispatched by extension,
+and a bare `mktemp` name (`/tmp/tmp.ABCDEF`) silently sent the windows `.zip` to `tar`, which
+"cannot read the MANIFEST" of a perfectly ordinary package.
 
 Byte identity alone cannot be the rule: macOS' `ld` stamps a random `LC_UUID` into every Mach-O,
 so the darwin archives are never byte-reproducible even when nothing changed. Measured 10-03 with
