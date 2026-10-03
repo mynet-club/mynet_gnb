@@ -72,15 +72,12 @@ jobs:
         # arch 必须是真正的矩阵轴。写成 matrix.include 的独立条目时，GitHub 只把
         # 最后一条并进组合（上一版因此只出了 armv7，其余五个 target 静默缺席）。
         # 每个 arch 对应的 SDK profile 见下面的 Resolve SDK profile 步骤。
+        # arch 标签用 mynet_ctl 的规范名（ReleaseDomainService::ARCHITECTURES）。mips 轴
+        # 只有两条腿（mipsel/mips），但**每条腿会出两个包名**：裸名 + `-softfp` 双胞胎，
+        # 由 scripts/gnb-dist.sh 在打包那一步复制同一份字节产出（不重编）。理由见下面
+        # Resolve SDK profile 那段的两套设备侧词表。
         # armv7-sf (mxs/generic) 未列入：i.MX28 等无 VFP 设备较罕见，且 OpenWrt 24.10
-        # 可能已放弃该 target。
-        # arch 标签用 mynet_ctl 的规范名（ReleaseDomainService::ARCHITECTURES），但更硬的
-        # 约束是**必须等于设备侧 /api/v2/detect/arch-map 报出来的那个名字**：ctl 的
-        # softfpFallback 只在上报 arch 一条记录都没有时才触发，而 arch_map 里没有任何
-        # distrib_arch 会映射成 mips*-softfp（mipsel_24kc/24kec/74kc/mips32 全部 → mipsel，
-        # mips_24kc → mips）。旧的 mipsel-sf 是我们自造的名，不在 ctl 词表里。
-        # mipsel 两条腿已合成一条（10-03 定）：**留的名字是 mipsel**。
-        # 证据链见下面的 Resolve SDK profile。
+        # 可能已放弃该 target。旧的 mipsel-sf 是我们自造的名，不在 ctl 词表里。
         arch: [arm64, amd64, mipsel, mips, armv7]
 
     steps:
@@ -130,22 +127,25 @@ jobs:
             armv7)     p='bcm27xx/bcm2709 bcm27xx-bcm2709  musl_eabi  arm_cortex-a7_neon-vfpv4' ;;  # hard-float
             *) echo "OpenWrt 矩阵里没有 '${{ matrix.arch }}' 这个 target" >&2; exit 1 ;;
           esac
-          # 为什么只有一条 mipsel 腿、而且它就叫 mipsel：
+          # 为什么只有一条 mipsel 腿、以及它为什么要发两个包名：
           # 1) 两条腿本来就是同一份 ABI —— 10-03 从 CI artifact 取实编二进制 `file`
           #    读回，mt7621 与 mt7620 的 musl interpreter 都是
           #    /lib/ld-musl-mipsel-sf.so.1，两边的包架构名也都是 mipsel_24kc。
           #    所以旧的 mipsel 标签描述的是 SDK profile（mt7621），不是浮点 ABI。
-          # 2) 名字必须跟设备侧一致 —— ctl 的映射表（`/api/v2/detect/arch-map`，
-          #    实测 arch_map 取值只有 amd64/i386/arm64/armv7/armv7-softfp/mips/
-          #    mips64/mipsel/mips64el/riscv64）里**没有任何 distrib_arch 映射到
-          #    mipsel-softfp / mips-softfp**：设备只会报 mipsel_24kc ⇒ mipsel。
-          # 3) 为什么「多发一个 mipsel-softfp、靠 softfpFallback 兜」这条路不成立 ——
-          #    fallback 只在**上报的那个 arch 一条记录都没有**时才触发
-          #    （`DetectController.php:196-203`：getLatest 命中就不回退）。而
-          #    openwrt/mipsel 下面已经有 v1.6.0.a 那批 is_latest 稳定行 ⇒ 设备永远
-          #    命中旧行、根本走不到回退，只会被钉死在老版本上。合腿前我按「回退双向、
-          #    报哪个都取得到」的判断选了 mipsel-softfp，那是错的，现已按映射表纠正。
-          # ⇒ 一条腿、profile 用覆盖设备更多的 mt7621、arch 就叫设备真报的 mipsel。
+          # 2) 裸名（mipsel/mips）服务 ctl 的取件脚本 —— 映射表
+          #    `/api/v2/detect/arch-map`（实测取值只有 amd64/i386/arm64/armv7/
+          #    armv7-softfp/mips/mips64/mipsel/mips64el/riscv64）里**没有任何
+          #    distrib_arch 映射成 mips*-softfp**：设备报 mipsel_24kc ⇒ mipsel。
+          #    只发 softfp 名还不行，因为 softfpFallback 只在**上报的那个 arch 一条
+          #    记录都没有**时才触发（DetectController.php:196-203），而 openwrt/mipsel
+          #    下面已经有 v1.6.0.a 那批 is_latest 稳定行 ⇒ 设备永远命中旧行、被钉死在
+          #    老版本上。10-03 我先只发了 softfp 名，撞的就是这个坑。
+          # 3) `-softfp` 双胞胎服务 WebUI 安装器 —— gnb_installer.lua:193/199 不查映射表，
+          #    它自己读 FPU，软浮点算出 mipsel-softfp / mips-softfp，而别名表(:240-244)
+          #    里**不含裸名** ⇒ 只发裸名这条路就取不到包。历史 v1.6.0.a 的 manifest 里
+          #    mipsel+mipsel-softfp、mips+mips-softfp 四个名字并存，才是既有契约的形状。
+          # ⇒ 一条腿、profile 用覆盖设备更多的 mt7621；包名裸名与 -softfp 各一份，
+          #   两份字节完全相同（复制，不重编），实现见 gnb-dist.sh 的「一次构建、两个名字」。
           # shellcheck disable=SC2086  # 固定四列，按空白切开即可
           set -- $p
           echo "sdk_target=$1"  >> "$GITHUB_OUTPUT"

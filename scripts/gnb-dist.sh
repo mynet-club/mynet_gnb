@@ -410,8 +410,16 @@ strip=${STRIP_CMD:-none}
 mark_features=${FEATURES_LINE:-none}
 mark_proxy=${PROXY_LINE:-none}
 tooling_commit=$TOOLING_DESC
-build_host=$(uname -sr)
+EOF
+
+# 易变字段一律**不进包**：同一个 tag 重跑 CI 时，built_at/ci_run 会让归档字节变掉，
+# 而 ctl-publish 的幂等预检正是拿归档 sha 判「同版本内容是否变了」——包内只要有一个
+# 与构建无关的时间戳，重跑就永远是「同版本内容冲突」，红得毫无意义。这些溯源信息改记
+# 在归档旁边的 BUILDINFO（产物目录里能看到，但不进 tgz/zip）。
+cat > "$OUT/BUILDINFO" <<EOF
+# 本次构建的易变溯源信息（不进归档包，见上面 MANIFEST 的理由）
 built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+build_host=$(uname -sr)
 ci_ref=${GITHUB_REF:-local}
 ci_job=${GITHUB_JOB:-local}
 ci_run=${GITHUB_RUN_ID:-local}
@@ -457,16 +465,45 @@ if [ "$MAKE_ARCHIVE" -eq 1 ]; then
     DIST_ABS="$(cd "$DIST_DIR" && pwd)"
     STAGE="$(mktemp -d "${TMPDIR:-/tmp}/gnb-stage.XXXXXX")"
     mkdir -p "$STAGE/bin"
+    # 条目逐个显式列出（不整目录交给 tar）：目录内顺序由文件系统决定，同一份字节
+    # 也可能被写成不同顺序，从而破坏下面要的可复现性。
+    STAGE_ENTRIES=""
     for prog in $PROGS; do
-        [ -f "$OUT/$prog" ]     && cp "$OUT/$prog" "$STAGE/bin/$prog"
-        [ -f "$OUT/$prog.exe" ] && cp "$OUT/$prog.exe" "$STAGE/bin/$prog.exe"
+        if [ -f "$OUT/$prog" ]; then
+            cp "$OUT/$prog" "$STAGE/bin/$prog"
+            STAGE_ENTRIES="$STAGE_ENTRIES bin/$prog"
+        fi
+        if [ -f "$OUT/$prog.exe" ]; then
+            cp "$OUT/$prog.exe" "$STAGE/bin/$prog.exe"
+            STAGE_ENTRIES="$STAGE_ENTRIES bin/$prog.exe"
+        fi
     done
     cp "$OUT/MANIFEST" "$OUT/SHA256SUMS" "$STAGE/"
+    STAGE_ENTRIES="$STAGE_ENTRIES MANIFEST SHA256SUMS"
+    # 可复现归档（10-03 定）：同一个 tag 重跑必须产出**逐字节相同**的包。实测两轮 CI
+    # 的四个二进制 sha 逐条相同，差异全在容器层（MANIFEST 里的 built_at/ci_run 已挪到
+    # BUILDINFO，剩下就是 mtime）—— 而 ctl-publish 的幂等预检正是拿归档 sha 判
+    # 「同版本内容是否变了」，包内只要带构建时刻，重跑就永远是「同版本内容冲突」，
+    # 整轴红得毫无意义。做法两步：
+    #   1) 归档内所有条目 mtime 钉到 release 源码提交的 commit 时间（与本次构建无关）。
+    #      cp 不带 -p 时 mtime 就是当前时间，正是差异来源；tar 与 zip 都读文件系统
+    #      mtime，所以这一步同时管住两种容器，比堆 GNU tar 长选项可移植得多（mac 轴是 bsdtar）。
+    #   2) gzip 头里另有一个 mtime ⇒ 走 `tar -cf - | gzip -n`；zip 加 -X 去掉额外属性。
+    STAGE_EPOCH="$(git log -1 --format=%ct "$RELEASE_SOURCE_COMMIT" 2>/dev/null || true)"
+    [ -n "$STAGE_EPOCH" ] \
+        || die "拿不到 release_source_commit 的提交时间，无法产出可复现归档"
+    STAGE_MTIME="$(date -u -r "$STAGE_EPOCH" +%Y%m%d%H%M.%S 2>/dev/null \
+        || date -u -d "@$STAGE_EPOCH" +%Y%m%d%H%M.%S 2>/dev/null || true)"
+    [ -n "$STAGE_MTIME" ] \
+        || die "date 既不支持 -r 也不支持 -d @epoch，钉不住归档 mtime"
+    find "$STAGE" -exec touch -t "$STAGE_MTIME" {} +
     if [ "$ARCH_EXT" = "zip" ]; then
         command -v zip >/dev/null 2>&1 || die "出 zip 需要 zip 命令（Windows 包按 ctl 的 windows 档必须是 zip）"
-        (cd "$STAGE" && zip -q -r "$DIST_ABS/$ARCHIVE_NAME" bin MANIFEST SHA256SUMS)
+        # shellcheck disable=SC2086  # 条目列表由上面按 $PROGS 拼出，必须按空白展开
+        (cd "$STAGE" && zip -q -X -r "$DIST_ABS/$ARCHIVE_NAME" $STAGE_ENTRIES)
     else
-        tar -czf "$DIST_ABS/$ARCHIVE_NAME" -C "$STAGE" bin MANIFEST SHA256SUMS
+        # shellcheck disable=SC2086
+        (cd "$STAGE" && tar -cf - $STAGE_ENTRIES) | gzip -n -9 > "$DIST_ABS/$ARCHIVE_NAME"
     fi
     rm -rf "$STAGE"
     STAGE=""
@@ -475,6 +512,32 @@ if [ "$MAKE_ARCHIVE" -eq 1 ]; then
     if [ -z "$ARCHIVE_SHA" ]; then
         die "归档 $ARCHIVE_NAME 算不出 SHA256 —— 不能发一个没有校验值的包"
     fi
+    # 一次构建、两个名字（openwrt 的 mips 轴有两套互不相通的设备侧词表）：
+    #   · ctl 取件脚本 `/api/v2/detect/openwrt?distrib_arch=mipsel_24kc` 解析成 **mipsel**
+    #     （arch_map 里没有任何 distrib_arch 映射到 mips*-softfp；DetectController.php:196-203
+    #     的 softfpFallback 只在上报 arch 一条记录都没有时才触发，裸名有行就永远不回退）；
+    #   · WebUI 安装器自己读 FPU（gnb_installer.lua:193/199）⇒ 软浮点算出 **mipsel-softfp**
+    #     / **mips-softfp**，而它的别名表（:240-244）里不含裸名。
+    # 只发一个名字必然漏掉一侧。历史 v1.6.0.a 的 manifest 里 mipsel+mipsel-softfp、
+    # mips+mips-softfp 四行俱在 —— 那就是既有契约的形状，这里只是不再重编、直接复制字节。
+    ARCH_TWINS=""
+    if [ "$REL_OS" = "openwrt" ]; then
+        case "$ARCH" in
+            mipsel) ARCH_TWINS=mipsel-softfp ;;
+            mips)   ARCH_TWINS=mips-softfp   ;;
+        esac
+    fi
+    for twin in $ARCH_TWINS; do
+        TWIN_NAME="gnb_${REL_OS}_${twin}_${TAG}.${ARCH_EXT}"
+        if [ "$PUBLISH" != "production" ]; then
+            TWIN_NAME="gnb_${REL_OS}_${twin}_${CHANNEL}_${TAG}.${ARCH_EXT}"
+        fi
+        cp "$ARCHIVE_PATH" "$DIST_ABS/$TWIN_NAME"
+        # 包内 MANIFEST 的 arch= 仍是构建时那个名（同一份字节，不改包里内容）；
+        # 双胞胎名与 sha 记在归档旁边的 BUILDINFO 里。
+        printf 'twin=%s sha256=%s（与 %s 同一份字节，供 WebUI 安装器的 -softfp 词表命中）\n' \
+            "$TWIN_NAME" "$ARCHIVE_SHA" "$ARCHIVE_NAME" >> "$OUT/BUILDINFO"
+    done
     printf 'archive=%s\narchive_sha256=%s\n' "$ARCHIVE_NAME" "$ARCHIVE_SHA" >> "$OUT/MANIFEST"
     echo "  归档: $ARCHIVE_PATH"
     echo "ARCHIVE=$ARCHIVE_PATH"

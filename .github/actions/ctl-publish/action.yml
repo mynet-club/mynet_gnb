@@ -70,11 +70,18 @@ runs:
         # 而 ReleaseService::upload() 里是裸 Release::create()、ReleaseController::store()
         # 没有 try/catch ⇒ 同一个 tag 重推时，已经发过的那几条腿不是「跳过」而是 **500
         # Server Error**：修好一条腿想重跑整个作业，其余腿全撞这个键，publish 就永久红了。
-        # 所以发之前先按 ctl 的取件路径量一次字节，判据是字节而不是「有没有这行」：
-        #   取不到（404）      ⇒ 没发过，正常上传
-        #   取到且 sha256 一致 ⇒ 同样的东西已经在下载面上，算通过，不重复发
-        #   取到但 sha256 不一致 ⇒ 同一个版本号下内容变了 —— 红。要重发就换 tag，
-        #                          绝不悄悄覆盖现网节点正在取的那一份。
+        # 所以发之前先按 ctl 的取件路径量一次，判据有两级（10-03 定）：
+        #   取不到（404）        ⇒ 没发过，正常上传
+        #   取到且 sha256 一致   ⇒ 同样的东西已经在下载面上，算通过，不重复发
+        #   取到但 sha256 不一致 ⇒ 再比**构建来源**（包内 MANIFEST 的固定字段）：
+        #        来源一致 ⇒ 同一个提交的重新构建，SKIP（不覆盖现网那一份，也不算失败）
+        #        来源不一致 / 读不出来 ⇒ 同一版本号下内容真的变了 —— 红，要重发就换 tag
+        # 为什么不能只看字节：macOS 的 ld 每次链接都往 Mach-O 里盖一个随机 LC_UUID，
+        # darwin 腿的归档字节天生不可复现（10-03 本机两次连续构建实测：MANIFEST 逐字节
+        # 相同，四个二进制全不同，UUID 一个 A9CFE9AC… 一个 329395FF…）。tar 的 mtime 与
+        # MANIFEST 里的 built_at/ci_run 已在出包侧钉死（gnb-dist.sh 的可复现归档段），
+        # 剩下的随机性来自链接器，不是我们能在包名层消除的东西 —— 所以判据必须是
+        # 「这份包是从哪个源码提交来的」，那正是这条护栏要防的事（同版本号偷换内容）。
         # 取件路径是公开的（DetectController.php:214 就用它给设备拼 URL），200/404 本身就是
         # 「发过没发过」的判据，不必去解析 release 列表的 JSON。
         sha256_of() {
@@ -83,17 +90,28 @@ runs:
         }
         HAVE_SHA=0
         if command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1; then HAVE_SHA=1; fi
-        remote_sha_of() { # 0=下载面上有这份并给出 sha256；1=没有（含非 200，保守当作未发布）；2=探测本身失败
-          local tmp code out
-          tmp="$(mktemp)"
-          if ! code="$(curl -sS --max-time 120 -o "$tmp" -w '%{http_code}' "${CTL_BASE}/d/gnb/$1")"; then
-            rm -f "$tmp"; return 2
+        # 构建来源指纹：只取与本次构建时刻无关的固定字段，顺序无关。
+        # 老包（v1.6.0.a 那批）里没有 built_at 之外的问题，字段名一样就能比；缺字段的
+        # 会得出不同的指纹，按「内容真的变了」红掉 —— 宁红不静默覆盖。
+        source_of() { # <归档> → 打印来源指纹；读不出 MANIFEST 返回 1
+          local art="$1" mf
+          case "$art" in
+            *.zip) mf="$(unzip -p "$art" MANIFEST 2>/dev/null || true)" ;;
+            *)     mf="$(tar -xOf "$art" MANIFEST 2>/dev/null || true)" ;;
+          esac
+          [ -n "$mf" ] || return 1
+          printf '%s\n' "$mf" \
+            | grep -E '^(release_source_commit|channel|publish|src_version|os|arch|makefile|mark_features|mark_proxy)=' \
+            | LC_ALL=C sort
+        }
+        remote_get() { # <文件名> → 0=下载面上有这份，文件留在 $REMOTE_TMP；1=没有；2=探测失败
+          local code
+          REMOTE_TMP="$(mktemp)"
+          if ! code="$(curl -sS --max-time 180 -o "$REMOTE_TMP" -w '%{http_code}' "${CTL_BASE}/d/gnb/$1")"; then
+            rm -f "$REMOTE_TMP"; return 2
           fi
-          if [ "$code" != "200" ]; then rm -f "$tmp"; return 1; fi
-          out="$(sha256_of "$tmp")" || { rm -f "$tmp"; return 2; }
-          rm -f "$tmp"
-          [ -n "$out" ] || return 2
-          printf '%s' "$out"
+          if [ "$code" != "200" ]; then rm -f "$REMOTE_TMP"; return 1; fi
+          return 0
         }
         if [ "$HAVE_SHA" -ne 1 ]; then
           echo "WARN: 这台 runner 上既没有 sha256sum 也没有 shasum —— 跳过幂等判定，" >&2
@@ -121,36 +139,55 @@ runs:
           arch="${BASH_REMATCH[2]}"
           version="${BASH_REMATCH[3]}"
 
-          # OpenWrt 这一档**不改名叫 openwrt-sdk**（2026-10-03 定）：设备侧只查 openwrt ——
-          #   DetectController.php:193 写死 $platform='openwrt'，:209 自己拼
-          #   gnb_openwrt_<arch>_<version>.tgz，softfpFallback(:228-241) 只在
-          #   mipsel ↔ mipsel-softfp 这类 arch 变体之间**双向**回退，从不换 platform；
-          #   gnb_installer.lua:414 只认 a.os=="openwrt"、:252 只 alias {openwrt,linux}。
-          # openwrt-sdk 那一档虽然存在，但没有任何消费者，发过去就是「下载面查得到、
-          # 设备取不到」的死路。所以 SDK/musl 构建直接顶掉老的 glibc 那条线、占用 openwrt
-          # 这个名字。arch 标签必须等于设备侧映射表报出来的那个名字（mips 轴就是
-          # mipsel/mips，**不是** mipsel-softfp）：softfpFallback 只在上报 arch 一条记录
-          # 都没有时才触发，而 openwrt/mipsel 下面已经有老的 is_latest 稳定行 —— 发成
-          # softfp 名等于让设备永远命中旧版本。规范化在 gnb-dist.sh，矩阵见 build_openwrt.yml。
+          # OpenWrt 这一档**不改名叫 openwrt-sdk**（2026-10-03 定）：gnb_installer.lua:414 只认
+          # a.os=="openwrt"、:252 只 alias {openwrt,linux}；openwrt-sdk 那一档虽然枚举里有，
+          # 但没有任何消费者，发过去就是「下载面查得到、设备取不到」的死路。所以 SDK/musl
+          # 构建直接顶掉老的 glibc 那条线、占用 openwrt 这个名字。
+          # mips 轴的 arch 名：**一次构建发两个名字**（双胞胎由 scripts/gnb-dist.sh 的
+          # 「一次构建、两个名字」段产出，这里只是照名上传），因为设备侧有两套互不相通的词表：
+          #   · 裸名 mipsel / mips —— ctl 取件脚本那套：DetectController.php:193 写死
+          #     $platform='openwrt'、:209 自己拼 gnb_openwrt_<arch>_<version>.tgz，
+          #     distrib_arch=mipsel_24kc 经 /api/v2/detect/arch-map 解析成 **mipsel**；
+          #     softfpFallback(:228-241) 只在上报 arch 一条记录都没有时才触发，而
+          #     openwrt/mipsel 下面已经有老的 is_latest 稳定行 ⇒ 只发 softfp 名会把设备
+          #     永远钉在旧版本上（10-03 我先只发了 softfp 名，撞的就是这个坑）。
+          #   · mipsel-softfp / mips-softfp —— WebUI 安装器那套：gnb_installer.lua:193/199
+          #     自己读 FPU，软浮点算出 -softfp 名，而别名表(:240-244)里**不含裸名**
+          #     ⇒ 只发裸名这条路就取不到包。历史 v1.6.0.a 的 manifest 里四个名字并存，
+          #     那才是既有契约的形状。
           #
           # openbsd 不再在这里 fail-loud：ctl 的 PLATFORMS/VALID_COMBINATIONS/parseFilename
           # 已加 openbsd。生产站那份代码是旧的、还没这个枚举时，这一档会得到 422 而不是
           # 静默丢 —— 校验在 ReleaseService::validateUpload()（:140-155），照样把 job 打红。
 
-          # 已经在下载面上且字节一致的就不再发一遍（见上面那段幂等判定）。
+          # 已经在下载面上的不再重发：先比字节，字节不同再比构建来源（见上面那段判定）。
           if [ "$HAVE_SHA" -eq 1 ]; then
             probe_rc=0
-            existing_sha="$(remote_sha_of "$name")" || probe_rc=$?
+            remote_get "$name" || probe_rc=$?
             if [ "$probe_rc" -eq 0 ]; then
               local_sha="$(sha256_of "$f")"
+              existing_sha="$(sha256_of "$REMOTE_TMP")"
               if [ "$existing_sha" = "$local_sha" ]; then
                 echo "SKIP: $name 已在下载面且字节一致（sha256=${local_sha:0:12}…）"
+                rm -f "$REMOTE_TMP"
                 skipped="$((skipped + 1))"
                 continue
               fi
-              echo "ERROR: $name 下载面上同版本包的内容不一样 —— 本地 ${local_sha:0:12}… vs 远端 ${existing_sha:0:12}…" >&2
+              # 字节不同 ≠ 内容变了：先问「是不是同一个源码提交的重新构建」。
+              local_src="$(source_of "$f")" || local_src=""
+              remote_src="$(source_of "$REMOTE_TMP")" || remote_src=""
+              rm -f "$REMOTE_TMP"
+              if [ -n "$local_src" ] && [ "$local_src" = "$remote_src" ]; then
+                echo "SKIP: $name 字节不同但构建来源相同 —— 同一个提交的重新构建，不覆盖现网那一份"
+                echo "      本地 ${local_sha:0:12}… vs 远端 ${existing_sha:0:12}…；来源指纹：$(printf '%s' "$local_src" | tr '\n' ' ')"
+                skipped="$((skipped + 1))"
+                continue
+              fi
+              echo "ERROR: $name 下载面上同版本包的**构建来源**不同 —— 本地 ${local_sha:0:12}… vs 远端 ${existing_sha:0:12}…" >&2
+              echo "       本地指纹: $(printf '%s' "${local_src:-读不出 MANIFEST}" | tr '\n' ' ')" >&2
+              echo "       远端指纹: $(printf '%s' "${remote_src:-读不出 MANIFEST}" | tr '\n' ' ')" >&2
               echo "       同一个 (version,platform,arch) 换内容必须换 tag；别覆盖现网正在取的那份。" >&2
-              failed="$failed $name(同版本内容冲突)"
+              failed="$failed $name(同版本来源冲突)"
               continue
             elif [ "$probe_rc" -ge 2 ]; then
               echo "WARN: 探测取件路径没走通（$CTL_BASE 连不上或读不出哈希），照旧尝试上传。" >&2
@@ -197,4 +234,4 @@ runs:
           echo "有包没发出去：$failed" >&2
           exit 1
         fi
-        echo "本批 ${#PKGS[@]} 个包：新发 $sent 个，已在下载面且字节一致 $skipped 个。"
+        echo "本批 ${#PKGS[@]} 个包：新发 $sent 个，已在下载面（字节一致或同一构建来源）$skipped 个。"

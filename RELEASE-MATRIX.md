@@ -103,10 +103,23 @@ so a real deploy keeps it.
 `ReleaseService::upload()` is a bare `Release::create()` with no try/catch in
 `ReleaseController::store()` — without a pre-check, every already-published leg would answer
 **500** on a re-run, so fixing one leg could never turn the job green. `ctl-publish` therefore
-measures the public fetch path (`/d/gnb/<filename>`) first: 404 → upload; 200 with identical
-SHA256 → `SKIP` (counts as success, nothing re-posted); 200 with a different SHA256 → hard
-failure, because content under an existing version number means a new tag, not an overwrite of
-what nodes are already pulling. A 500 that the pre-check did not predict is almost always a
+measures the public fetch path (`/d/gnb/<filename>`) first, and the verdict is **two-level**:
+404 → upload; 200 with identical SHA256 → `SKIP`; 200 with different SHA256 → compare **build
+provenance** (the fixed fields of the `MANIFEST` inside each archive: `release_source_commit`,
+`channel`, `publish`, `src_version`, `os`, `arch`, `makefile`, and the two Features marks) —
+same provenance → `SKIP` (a rebuild of the same commit; the existing bytes stay served, nothing
+is overwritten), different or unreadable provenance → hard failure, because content under an
+existing version number means a new tag, not an overwrite of what nodes are already pulling.
+
+Byte identity alone cannot be the rule: macOS' `ld` stamps a random `LC_UUID` into every Mach-O,
+so the darwin archives are never byte-reproducible even when nothing changed. Measured 10-03 with
+two consecutive local builds of the same channel/arch — `MANIFEST` identical, all four binaries
+different (`A9CFE9AC-…` vs `329395FF-…`). What *was* our own noise has been fixed on the
+packaging side (`scripts/gnb-dist.sh`, 可复现归档: the volatile `built_at`/`ci_run`/`build_host`
+fields moved out of the shipped `MANIFEST` into a sibling `BUILDINFO`, archive entry mtimes pinned
+to the release source commit's time, `tar -cf - | gzip -n`, `zip -X`, entries listed explicitly
+instead of letting the filesystem order them). Those are ours to control; the linker's UUID is not,
+which is why provenance — not bytes — is the contract. A 500 that the pre-check did not predict is almost always a
 `status=0` row: disabled releases leave the fetch path but still hold the unique index, and
 clearing them needs a `release:manage` token.
 
@@ -117,31 +130,39 @@ string — Laravel's `boolean` accepts `true`, `false`, `1`, `0`, `"1"`, `"0"`, 
 field must be true or false" on 2026-10-03 for exactly this reason; `0`/`1` also land correctly
 through the model's boolean cast (`Models/Release.php:24`).
 
-**The two mipsel legs are merged into one, posted as `mipsel` (2026-10-03; the name was corrected
-the same day).** `mipsel` (ramips/mt7621) and `mipsel-sf` (ramips/mt7620) were never hard- vs
-soft-float: measured 10-03 from a CI artifact, mt7621's ELF interpreter is
+**The two mipsel legs are merged into one build, published under *two* arch names (`mipsel` +
+`mipsel-softfp`, 2026-10-03).** `mipsel` (ramips/mt7621) and `mipsel-sf` (ramips/mt7620) were never
+hard- vs soft-float: measured 10-03 from a CI artifact, mt7621's ELF interpreter is
 `/lib/ld-musl-mipsel-sf.so.1` — identical to mt7620 — and both profiles publish as package arch
 `mipsel_24kc`. The old `mipsel` label described the SDK *profile*, not the ABI, so the two legs
-published the same ABI twice. One merged leg therefore builds from the mt7621 profile (more
-devices).
+published the same ABI twice. One merged leg builds from the mt7621 profile (more devices).
 
-The arch label must equal **what the device reports**, not what the ABI is: `/api/v2/detect/arch-map`
-maps `mipsel_24kc`/`24kec`/`74kc`/`mips32` → `mipsel` and nothing → `mipsel-softfp`, and
-`buildDownloads()` consults `softfpFallback()` only when `getLatest()` found **no** row for the
-reported arch (`DetectController.php:196-203`). `openwrt/mipsel` already holds `is_latest`
-`v1.6.0.a` rows, so publishing only under `mipsel-softfp` would leave every mt7621/mt7620 node
-pinned to the stale release — the fallback can never fire for an arch that has a row. That was my
-first choice on 10-03, and a live probe of
-`GET /api/v2/detect/openwrt?distrib_arch=mipsel_24kc` (answer: `ctl_arch=mipsel`, download URL
-`gnb_openwrt_mipsel_v1.6.0.a.tgz`) disproved it. `mips` (ath79) is soft-float too but stays
-bare-labelled for the same reason: `mips_24kc` → `mips`, and the `gnb_openwrt_mips_*` rows already
-in the download face would stop resolving.
+Which name to publish is not a question about the ABI — it is a question about **who resolves the
+name**, and there are two resolvers whose vocabularies do not overlap:
 
-**Nothing needs re-posting for this correction.** The only artifact under the wrong name is the
-`v1.6.8-dev` leg, whose row is `is_stable=0`; `refreshLatestFlag()` selects latest only inside the
-`stable()` scope, so no device can ever be handed it — the corrected label takes effect with the
-next tag, and re-running the build just to rename a row devices cannot reach would burn the whole
-matrix's CI minutes for no reachable difference.
+- **ctl's fetch path** (`GET /api/v2/detect/openwrt?distrib_arch=…`): `arch-map` maps
+  `mipsel_24kc`/`24kec`/`74kc`/`mips32` → `mipsel` and nothing → `mipsel-softfp`, and
+  `buildDownloads()` consults `softfpFallback()` only when `getLatest()` found **no** row for the
+  reported arch (`DetectController.php:196-203`). `openwrt/mipsel` already holds `is_latest`
+  `v1.6.0.a` rows, so a `mipsel-softfp`-only publish leaves every mt7621/mt7620 node pinned to the
+  stale release. Proven live on 10-03: the probe answered `ctl_arch=mipsel` with a
+  `gnb_openwrt_mipsel_v1.6.0.a.tgz` URL. That was my first choice, corrected the same day.
+- **the WebUI installer** (`mynet_agent/openwrt/luasrc/model/mynet/gnb_installer.lua`): it does
+  *not* consult `arch-map`. It matches `manifest.json` artifacts against its own detection, reading
+  the FPU (`:193`/`:199`) so a soft-float mipsel node becomes `mipsel-softfp`, and its alias table
+  (`:240-244`) contains no bare `mipsel` — so a bare-name-only publish is invisible to it. `armv7`
+  needs no twin, because `armv7-hardfp`'s aliases (`:230-231`) do include `armv7`.
+
+So `gnb-dist.sh` copies the same bytes under both names (the `ARCH_TWINS` block): one build, two
+filenames, zero extra compile minutes — which is also the shape the historical `v1.6.0.a` manifest
+already had (`mipsel`, `mipsel-softfp`, `mips`, `mips-softfp` all present). `mips` (ath79) is
+soft-float too and gets the same pair.
+
+**What the already-posted `v1.6.8-dev` rows need:** nothing by hand. They are `is_stable=0`, and
+`refreshLatestFlag()` selects latest only inside the `stable()` scope, so no device is ever handed
+one; the rows the two vocabularies need get created by the normal re-run, and the odd early
+`mipsel-softfp` dev row is just history at that point. Clearing rows instead of leaving them would
+need a `release:manage` token and buys nothing.
 
 ## Platform expectations
 
