@@ -57,7 +57,8 @@ the archive SHA256.
 ## Package naming
 
 Production keeps the naming contract `mynet_ctl` parses
-(`{name}_{platform}_{arch}_{version}.tgz`, see `ReleaseDomainService::parseFilename`), so
+(`{name}_{platform}_{arch}_{version}.{ext}` — `tgz`, or `zip` on the windows leg; see
+`ReleaseDomainService::parseFilename`), so
 the channel lives in the MANIFEST and the artifact directory rather than the filename.
 Internal builds insert the channel segment after the arch, e.g.
 `gnb_linux_mipsel_x-dev-patched_v1.6.8.tgz` (that channel has since been folded into
@@ -84,6 +85,19 @@ unfetchable". So the SDK/musl builds take over the `openwrt` slot and the glibc 
 OpenWrt is dropped; the soft-float leg is labelled `mipsel-softfp` (our old `mipsel-sf` was
 self-invented and is not in ctl's vocabulary). One gap remains a hard failure rather than a
 skip: ctl's `PLATFORMS` has no `openbsd`, so BSD-axis OpenBSD packages cannot be published.
+
+**Re-pushing a tag does not re-post packages that already match.** `releases` carries
+`unique(product, version, platform, arch, variant)`
+(`database/migrations/2026_03_20_013123_create_ctl_core_tables.php:35`) while
+`ReleaseService::upload()` is a bare `Release::create()` with no try/catch in
+`ReleaseController::store()` — without a pre-check, every already-published leg would answer
+**500** on a re-run, so fixing one leg could never turn the job green. `ctl-publish` therefore
+measures the public fetch path (`/d/gnb/<filename>`) first: 404 → upload; 200 with identical
+SHA256 → `SKIP` (counts as success, nothing re-posted); 200 with a different SHA256 → hard
+failure, because content under an existing version number means a new tag, not an overwrite of
+what nodes are already pulling. A 500 that the pre-check did not predict is almost always a
+`status=0` row: disabled releases leave the fetch path but still hold the unique index, and
+clearing them needs a `release:manage` token.
 
 **Open question, deliberately not decided here:** the `mipsel` (ramips/mt7621) and
 `mipsel-softfp` (ramips/mt7620) legs are the *same* ABI, not hard- vs soft-float — measured

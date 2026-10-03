@@ -56,9 +56,47 @@ runs:
           *-*) IS_STABLE=false ;;
           *)   IS_STABLE=true  ;;
         esac
+
+        # 幂等判定（必须先于上传）：releases 表有
+        # unique(product,version,platform,arch,variant)
+        # （mynet_ctl/database/migrations/2026_03_20_013123_create_ctl_core_tables.php:35），
+        # 而 ReleaseService::upload() 里是裸 Release::create()、ReleaseController::store()
+        # 没有 try/catch ⇒ 同一个 tag 重推时，已经发过的那几条腿不是「跳过」而是 **500
+        # Server Error**：修好一条腿想重跑整个作业，其余腿全撞这个键，publish 就永久红了。
+        # 所以发之前先按 ctl 的取件路径量一次字节，判据是字节而不是「有没有这行」：
+        #   取不到（404）      ⇒ 没发过，正常上传
+        #   取到且 sha256 一致 ⇒ 同样的东西已经在下载面上，算通过，不重复发
+        #   取到但 sha256 不一致 ⇒ 同一个版本号下内容变了 —— 红。要重发就换 tag，
+        #                          绝不悄悄覆盖现网节点正在取的那一份。
+        # 取件路径是公开的（DetectController.php:214 就用它给设备拼 URL），200/404 本身就是
+        # 「发过没发过」的判据，不必去解析 release 列表的 JSON。
+        sha256_of() {
+          if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+          else shasum -a 256 "$1" | cut -d' ' -f1; fi
+        }
+        HAVE_SHA=0
+        if command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1; then HAVE_SHA=1; fi
+        remote_sha_of() { # 0=下载面上有这份并给出 sha256；1=没有（含非 200，保守当作未发布）；2=探测本身失败
+          local tmp code out
+          tmp="$(mktemp)"
+          if ! code="$(curl -sS --max-time 120 -o "$tmp" -w '%{http_code}' "${CTL_BASE}/d/gnb/$1")"; then
+            rm -f "$tmp"; return 2
+          fi
+          if [ "$code" != "200" ]; then rm -f "$tmp"; return 1; fi
+          out="$(sha256_of "$tmp")" || { rm -f "$tmp"; return 2; }
+          rm -f "$tmp"
+          [ -n "$out" ] || return 2
+          printf '%s' "$out"
+        }
+        if [ "$HAVE_SHA" -ne 1 ]; then
+          echo "WARN: 这台 runner 上既没有 sha256sum 也没有 shasum —— 跳过幂等判定，" >&2
+          echo "      重推同一个 tag 时已发过的腿会撞 unique 键出 500，届时按上面那段读错误。" >&2
+        fi
         echo "tag=$REF_NAME is_stable=$IS_STABLE 待上传 ${#PKGS[@]} 个包"
 
         failed=""
+        skipped=0
+        sent=0
         for f in "${PKGS[@]}"; do
           name="$(basename "$f")"
           # 命名契约的 SSOT 是 mynet_ctl 的 ReleaseDomainService::{generateFilename,parseFilename}：
@@ -92,6 +130,26 @@ runs:
             continue
           fi
 
+          # 已经在下载面上且字节一致的就不再发一遍（见上面那段幂等判定）。
+          if [ "$HAVE_SHA" -eq 1 ]; then
+            probe_rc=0
+            existing_sha="$(remote_sha_of "$name")" || probe_rc=$?
+            if [ "$probe_rc" -eq 0 ]; then
+              local_sha="$(sha256_of "$f")"
+              if [ "$existing_sha" = "$local_sha" ]; then
+                echo "SKIP: $name 已在下载面且字节一致（sha256=${local_sha:0:12}…）"
+                skipped="$((skipped + 1))"
+                continue
+              fi
+              echo "ERROR: $name 下载面上同版本包的内容不一样 —— 本地 ${local_sha:0:12}… vs 远端 ${existing_sha:0:12}…" >&2
+              echo "       同一个 (version,platform,arch) 换内容必须换 tag；别覆盖现网正在取的那份。" >&2
+              failed="$failed $name(同版本内容冲突)"
+              continue
+            elif [ "$probe_rc" -ge 2 ]; then
+              echo "WARN: 探测取件路径没走通（$CTL_BASE 连不上或读不出哈希），照旧尝试上传。" >&2
+            fi
+          fi
+
           # Accept: application/json 不是装饰：实测不带它时 ctl 的校验失败按 web 请求处理，
           # 回 302 + 一段「Redirecting to https://ctl.mynet.club」HTML，日志里只剩一个
           # 看不出原因的 302；带上它才回 422 + JSON 错误字段（今天拿真 token 实测过）。
@@ -113,15 +171,23 @@ runs:
           body="${resp%$'\n'*}"
           if [ "$code" != "201" ]; then
             echo "ERROR: $name HTTP $code —— $(printf '%s' "$body" | tr -d '\n' | head -c 400)" >&2
+            if [ "$code" = "500" ]; then
+              # 幂等判定已经量过字节还出 500，基本只剩一种解释：那一行被 disable 了
+              # （status=0 不出现在取件路径上，所以量不到，但 unique 索引连着软删行一起算）
+              # ⇒ POST 必撞键。要重发得先用 release:manage 那个 token 把旧行处理掉。
+              echo "       500 且这里没量到已有文件 ⇒ 多半是同键的软删行（status=0）占着索引；" >&2
+              echo "       uploads 走的是裸 Release::create()，没有 try/catch。" >&2
+            fi
             failed="$failed $name(HTTP$code)"
             continue
           fi
           url="$(printf '%s' "$body" | sed -n 's/.*"download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
           echo "OK: $name -> ${url:-（响应里没有 download_url）}"
+          sent="$((sent + 1))"
         done
 
         if [ -n "$failed" ]; then
           echo "有包没发出去：$failed" >&2
           exit 1
         fi
-        echo "全部 ${#PKGS[@]} 个包已进 CTL 下载面。"
+        echo "本批 ${#PKGS[@]} 个包：新发 $sent 个，已在下载面且字节一致 $skipped 个。"

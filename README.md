@@ -107,6 +107,17 @@ Bearer token = secret `CTL_RELEASE_UPLOAD_TOKEN`；对外取件路径
 `is_stable` 按 tag 判（带 `-` 的预发布报 false）：`refreshLatestFlag()` 只在 `stable()` 作用域里选
 latest，把 `-dev` 报成 stable 会推着现网节点升到开发包；代价是 dev 包不会成为 latest，要取它得按版本显式取。
 
+**重推同一个 tag 是安全的，前提是包没变。** `releases` 表带
+`unique(product, version, platform, arch, variant)`
+（`mynet_ctl/database/migrations/2026_03_20_013123_create_ctl_core_tables.php:35`），
+而 `ReleaseService::upload()` 里是裸 `Release::create()`、`ReleaseController::store()` 没有
+try/catch ⇒ 不做判定的话，重推同一个 tag 时已发过的那几条腿会撞键回 **500**，修好一条腿想重跑
+整个作业就永远红。所以 `ctl-publish` 发之前先按公开取件路径 `/d/gnb/<文件名>` 量一次字节：
+取不到（404）就正常上传；取到且 sha256 一致就报 `SKIP`（已在下载面，算通过、不重复发）；
+取到但 sha256 不同就**红** —— 同一个版本号下内容变了必须换 tag，不覆盖现网正在取的那一份。
+若量不到却仍出 500，多半是同键的软删行（`status=0` 不在取件路径上，但仍占着索引）；
+要重发得先用 `release:manage` 那个 token 处理旧行。
+
 本地守护
 ------
 
