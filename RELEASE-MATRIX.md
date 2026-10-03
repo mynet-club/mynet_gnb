@@ -106,6 +106,13 @@ what nodes are already pulling. A 500 that the pre-check did not predict is almo
 `status=0` row: disabled releases leave the fetch path but still hold the unique index, and
 clearing them needs a `release:manage` token.
 
+**`is_stable` goes on the wire as `1`/`0`, never `true`/`false`.** The endpoint validates it with
+`nullable|boolean` (`Api/V1/ReleaseController.php:66`), and in a multipart form every value is a
+string — Laravel's `boolean` accepts `true`, `false`, `1`, `0`, `"1"`, `"0"`, so the strings
+`"true"`/`"false"` are rejected. All five axes' publish jobs failed with **422** "The is stable
+field must be true or false" on 2026-10-03 for exactly this reason; `0`/`1` also land correctly
+through the model's boolean cast (`Models/Release.php:24`).
+
 **The two mipsel legs are merged into one (`mipsel-softfp`, 2026-10-03).** `mipsel`
 (ramips/mt7621) and `mipsel-softfp` (ramips/mt7620) were never hard- vs soft-float: measured
 10-03 from a CI artifact, mt7621's ELF interpreter is `/lib/ld-musl-mipsel-sf.so.1` — identical

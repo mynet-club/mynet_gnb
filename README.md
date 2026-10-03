@@ -104,8 +104,12 @@ Bearer token = secret `CTL_RELEASE_UPLOAD_TOKEN`；对外取件路径
 传输失败、422 都算）—— 静默跳过 `exit 0` 正是上一轮「tag 发了、下载面一个包都没有」的成因。
 `variant` 一律不传：`ReleaseService::upload()` 会把 variant 当第 5 参喂 `generateFilename(…, $ext)`，
 非空 variant 直接变成文件扩展名，而 `parseFilename` 只认 `tgz|zip|tar.gz|ipk` ⇒ 记录建得出来却下不到。
-`is_stable` 按 tag 判（带 `-` 的预发布报 false）：`refreshLatestFlag()` 只在 `stable()` 作用域里选
+`is_stable` 按 tag 判（带 `-` 的预发布报**不稳定**）：`refreshLatestFlag()` 只在 `stable()` 作用域里选
 latest，把 `-dev` 报成 stable 会推着现网节点升到开发包；代价是 dev 包不会成为 latest，要取它得按版本显式取。
+**线上传的值必须是 `1`/`0`，不能是 `true`/`false`**：ctl 校验是 `nullable|boolean`
+（`Api/V1/ReleaseController.php:66`），而 multipart 里一切值都是字符串，Laravel 的 `boolean` 只认
+`true/false/1/0/"1"/"0"` —— 串 `"false"` 会 422「The is stable field must be true or false」
+（10-03 五轴 publish 同时全红就是这个原因）。
 
 **重推同一个 tag 是安全的，前提是包没变。** `releases` 表带
 `unique(product, version, platform, arch, variant)`
