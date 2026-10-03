@@ -19,3 +19,17 @@ dist/
 # 包内单测的编译产物（make 出来即与源码不同步，历史上被误提交过一次）
 test_proxy_conf
 *.dSYM/
+
+# ── 节点密钥 / 集成测试备份：一律不入库 ──────────────────────
+# 2026-10-04 事故：packages/*/itest/backup-20260930*/ 下的 .tgz 把生产节点
+# 10.182.236.180 与公司整网网关 192.168.0.2 的 *.private、credential.json
+# 提交并推上了 GitHub（4 条分支，13 个归档，9 个敏感条目）。
+# 当时 guard 的 A2/A3 都拦不住：A2 只认 PEM 文本 `BEGIN … PRIVATE KEY`，而
+# GNB 私钥是裸 32 字节 ed25519 二进制；A3 只认**入库文件名**，而入库的是
+# `_etc_opengnb.tgz`。guard.sh 的 A4（归档内容扫描）是事后补的第二道闸，
+# 这里才是第一道：**根本不让它们进工作树的跟踪范围**。
+# 注意不忽略 *.zip —— sources/author-dev/*/gnb-*.zip 是作者源码快照，必须跟踪。
+itest/
+backup-*/
+*.private
+credential.json
