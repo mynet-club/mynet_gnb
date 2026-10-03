@@ -15,7 +15,7 @@ env:
   SDK_VERSION: "24.10.0"
   SDK_GCC: "13.3.0"
   # 通道口径见 packages/RELEASE-SOURCES（2026-10-04 起只有一条）。
-  CHANNELS: main-patched
+  CHANNELS: main
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

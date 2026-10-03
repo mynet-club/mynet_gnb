@@ -22,20 +22,27 @@
 #   features_mark          构建后的 gnb 二进制里 "Features: proxy" 应为 present 还是 absent
 #   publish                production = 可进生产下载目录；internal = 只进 GitHub Release/CI 产物
 #
-# 2026-10-04 开发者裁定：**只维护一条通道**（main-patched），就是我们自己的版本。
+# 2026-10-04 开发者裁定：**只维护一条通道**，就是我们自己的版本，通道名就叫 main（主线）。
 # 作者出新版本时的动作不是「另开一条对照通道」，而是把我们的改动合并到作者新版本上，
-# 合并结果就是主线（下面的「接作者新快照的固定动作」）。原来的纯上游对照通道 main
-# 随之删除：它的 release_source_commit 一直是 UNSET（本线唯一的纯上游提交 2313dea 是
-# 旧嵌套布局，与本文件要求的根布局构建入口不兼容；根布局提交的 src/ 又已含 proxy 代码），
-# 五个 workflow 只会打印「跳过」，从来出不了包 —— 一条永远不出包的通道不产生任何信息。
+# 合并结果就是主线（下面的「接作者新快照的固定动作」）。
+# 原来那条纯上游对照通道随之删除，main 这个名字腾出来给唯一的主线通道用（当天先收敛成
+# 一条 main-patched，随后改名 main）。被删的那条 release_source_commit 一直是 UNSET
+# （本线唯一的纯上游提交 2313dea 是旧嵌套布局，与本文件要求的根布局构建入口不兼容；
+# 根布局提交的 src/ 又已含 proxy 代码），五个 workflow 只会打印「跳过」，从来出不了包
+# —— 一条永远不出包的通道不产生任何信息。
 # 纯上游树并没有丢：`git archive 2313dea:src` 导出的就是根布局上游树，
 # scripts/check.sh 的 test 段（补丁链能否重新应用）用的正是这条判断。
+#
+# 改名不影响已发布的包：channel 字段已从 ctl-publish 的来源指纹里去掉（它只是指向
+# release_source_commit 的标签，同一个提交挂哪个名字都编出同一份字节），所以重跑
+# v1.6.8-dev 时那 20 个包仍按「同一构建来源」SKIP，不会因为包内 MANIFEST 写着旧通道名
+# 而全体红掉。生产包名里本来也没有通道段，设备侧看到的文件名一个字节都没变。
 #
 # 2026-10-02 换基（开发者裁定）：**发行基线 = 作者开发包**，不再是上游 1.6.8 发行版。
 # 理由：热重启只在做发包里做完了（发行版 `2313dea` 里 `gnb_hot_restart_prepare` 只是命令字，
 # 没有停/起 worker 的实现；开发包 `74414d1` 有 gnb_worker_wait_worker_started/stoped 全套，
 # 并原生修了日志/UDP fd 泄漏 gnb_log_udp_close 与 mmap 的 MAP_FAILED 判失败）。
-# x-dev-patched 通道当天先并掉（它和主线是同一棵树），main 通道 10-04 并掉。
+# x-dev-patched 通道当天先并掉（它和主线是同一棵树），纯上游对照通道 10-04 并掉。
 #
 # 本通道两个 pin 的来处（都在 main 线上可达，不依赖未推送的分支）：
 #   local_source_commit 98f8b4e = 作者快照 c81b459 + 一行构建修复。
@@ -77,4 +84,4 @@
 # 所以 v1.6.8-dev 永远是 beta，正式推全网要另打不带后缀的 tag。
 
 channel|author_identity|local_source_commit|release_source_commit|patch_package|src_version|features_mark|publish
-main-patched|author-zip@2454c303dabdb5e27a13a3fe19b0c4d5066a845d12b75e80172afa84e990c1ae|98f8b4ef16afc11a0452b5e76b9b0f1ddb84f9c1|e0228d937d7fc7e8c8b61c531457442bb27e34a9|packages/1.6.8-dev/p1-route-proxy|1.6.8|present|production
+main|author-zip@2454c303dabdb5e27a13a3fe19b0c4d5066a845d12b75e80172afa84e990c1ae|98f8b4ef16afc11a0452b5e76b9b0f1ddb84f9c1|e0228d937d7fc7e8c8b61c531457442bb27e34a9|packages/1.6.8-dev/p1-route-proxy|1.6.8|present|production

@@ -47,7 +47,7 @@ runs:
 
         # variant 一律不传：ctl 的 ReleaseService::upload() 把 variant 当第 5 个参数喂给
         # generateFilename(…, $ext)，非空 variant 直接变成文件扩展名
-        # （gnb_linux_amd64_v1.6.8-dev.main-patched），而下载侧 parseFilename 只认
+        # （gnb_linux_amd64_v1.6.8-dev.<通道名>），而下载侧 parseFilename 只认
         # tgz|zip|tar.gz|ipk ⇒ 记录建得出来但下不到。通道信息在包内 MANIFEST 与产物目录名里。
         #
         # is_stable 按 tag 判：ctl 的 refreshLatestFlag() 只在 stable() 作用域里选 latest，
@@ -99,6 +99,13 @@ runs:
         # 文件名本身，而它已经是 releases 表 unique(product,version,platform,arch,variant)
         # 的一元 —— 护栏不需要再在包内比一遍。os / makefile 留着：它们区分的是构建家族
         # （mingw / openwrt / linux），双胞胎不会变。
+        # 里面也**不放 channel**（2026-10-04 去掉）：通道只是指向 release_source_commit 的
+        # 标签，同一个提交挂哪个通道名都编出同一份字节，而 release_source_commit 本身已经在
+        # 指纹里 ⇒ channel 不提供任何区分度。留着它的唯一效果是把「纯改名」误判成「同版本
+        # 内容变了」：通道从 main-patched 改回 main 之后重跑 v1.6.8-dev，下载面上那 20 个包
+        # 的 MANIFEST 仍写着旧通道名，八个字段里就差这一行，于是全体红掉。生产包名里本来也
+        # 没有通道段（只有 internal 包才插一段），所以现网那一份属于哪个通道名，设备侧无从
+        # 分辨、也无需分辨。
         source_of() { # <归档> → 打印来源指纹；读不出 MANIFEST 返回 1
           local art="$1" mf
           case "$art" in
@@ -107,7 +114,7 @@ runs:
           esac
           [ -n "$mf" ] || return 1
           printf '%s\n' "$mf" \
-            | grep -E '^(release_source_commit|channel|publish|src_version|os|makefile|mark_features|mark_proxy)=' \
+            | grep -E '^(release_source_commit|publish|src_version|os|makefile|mark_features|mark_proxy)=' \
             | LC_ALL=C sort
         }
         REMOTE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gnb-probe.XXXXXX")"

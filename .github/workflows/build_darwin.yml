@@ -12,7 +12,7 @@ env:
   # 想出的通道（2026-10-04 起只有一条，理由见 packages/RELEASE-SOURCES 头部）。
   # 未指定发行源码提交的通道会被 plan job 标为 skipped 并写进 summary，
   # 补丁/源码准备线在 packages/RELEASE-SOURCES 填上 commit 后，它自动进入矩阵。
-  CHANNELS: main-patched
+  CHANNELS: main
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false

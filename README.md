@@ -18,20 +18,25 @@ CI 从不 apply 它。真相只有提交和 `packages/RELEASE-SOURCES`。
 
 | 通道 | 作者身份 | 基线提交 | 发行提交 | 状态 |
 |---|---|---|---|---|
-| `main-patched` | 作者开发 ZIP `2454c303dabd…` | `98f8b4ef16af` | `e0228d937d7f` | 生产发行（唯一通道） |
+| `main` | 作者开发 ZIP `2454c303dabd…` | `98f8b4ef16af` | `e0228d937d7f` | 生产发行（唯一通道） |
 
-2026-10-04 起只维护这一条通道，就是我们自己的版本线。作者出新版本时不是另开对照通道，
-而是按下面的固定动作把我们的改动合并到作者新版本上，合并结果即主线。原来的纯上游对照
-通道 `main` 已删除：它的 `release_source_commit` 一直是 `UNSET`（本线唯一的纯上游提交
-`2313dea` 是旧嵌套布局），五个 workflow 只会打印「跳过」，从来出不了包。纯上游树仍然
-可达（`git archive 2313dea:src`），`scripts/check.sh` 的 test 段用它验补丁链能否重放。
+2026-10-04 起只维护这一条通道，就是我们自己的版本线，通道名即主线 `main`（当天先收敛成
+一条 `main-patched`，随后改名）。作者出新版本时不是另开对照通道，而是按下面的固定动作把
+我们的改动合并到作者新版本上，合并结果即主线。原来那条同名但含义不同的**纯上游对照通道**
+已删除：它的 `release_source_commit` 一直是 `UNSET`（本线唯一的纯上游提交 `2313dea` 是旧
+嵌套布局），五个 workflow 只会打印「跳过」，从来出不了包。纯上游树仍然可达
+（`git archive 2313dea:src`），`scripts/check.sh` 的 test 段用它验补丁链能否重放。
+
+改名不动已发布的包：通道名只写进包内 `MANIFEST`，设备读的 `manifest.json` 里那个 `channel`
+是 `is_stable ? stable : beta`（`ManifestService.php:297`），两者不是一回事；`channel` 也已
+从 `ctl-publish` 的来源指纹里去掉，所以重跑旧 tag 仍按「同一构建来源」SKIP。
 
 不变量：`git diff <基线提交>..<发行提交>` 就是我们在源码上的全部改动（当前 8 个 proxy 文件），
 **冒出第 9 个文件即为混入别的东西**。`release_source_commit` 为 `UNSET` 的通道必须失败。
 
 接作者新快照的固定动作写在 `packages/RELEASE-SOURCES` 的注释里（换基线 → 重放 proxy 提交 →
-`git merge --no-ff` 进 `main` → 重打 tag）。钉的是**提交**不是分支名；已发布、已出过包的提交
-不许 rebase 或 force-push，否则 CI `git archive` 取不到它只能 fail-loud。
+`git merge --no-ff` 进 `main` **分支** → 重打 tag）。钉的是**提交**不是分支名；已发布、已出过
+包的提交不许 rebase 或 force-push，否则 CI `git archive` 取不到它只能 fail-loud。
 
 构建与出包
 --------
@@ -39,7 +44,7 @@ CI 从不 apply 它。真相只有提交和 `packages/RELEASE-SOURCES`。
 一个脚本干完六种事，各平台的 workflow 只供工具链与发布目录：
 
 ```sh
-sh scripts/gnb-dist.sh --channel main-patched --os linux --arch amd64 \
+sh scripts/gnb-dist.sh --channel main --os linux --arch amd64 \
     --tag v1.6.8-dev --make make --archive --dist-dir dist
 ```
 

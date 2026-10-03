@@ -8,16 +8,26 @@ for what CI is allowed to build is `packages/RELEASE-SOURCES` (read it with
 
 | channel | author identifier | local source commit | release source commit | patch package (provenance only) | publish |
 |---|---|---|---|---|---|
-| main-patched | ZIP SHA256 `2454c303dabd...` | `98f8b4ef16afc11a0452b5e76b9b0f1ddb84f9c1` | `e0228d937d7fc7e8c8b61c531457442bb27e34a9` | `packages/1.6.8-dev/p1-route-proxy` | production |
+| main | ZIP SHA256 `2454c303dabd...` | `98f8b4ef16afc11a0452b5e76b9b0f1ddb84f9c1` | `e0228d937d7fc7e8c8b61c531457442bb27e34a9` | `packages/1.6.8-dev/p1-route-proxy` | production |
 
-Since 2026-10-04 this is the only line we maintain: our own version. When the author ships a
-new snapshot we merge our two commits onto it (the fixed sequence in the `RELEASE-SOURCES`
-header) and the merged tree becomes the mainline — no parallel control channel. The former
-pure-upstream `main` channel is deleted: its `release_source_commit` was permanently `UNSET`
+Since 2026-10-04 this is the only line we maintain: our own version, and the channel is simply
+called `main` because it *is* the mainline. When the author ships a new snapshot we merge our two
+commits onto it (the fixed sequence in the `RELEASE-SOURCES` header) and the merged tree becomes
+the mainline — no parallel control channel. The former pure-upstream control channel (which used
+to hold the name `main`; the surviving line was briefly `main-patched` before taking the name
+over) is deleted: its `release_source_commit` was permanently `UNSET`
 (the only pure-upstream commit on this line, `2313dea`, is the old nested layout), so all five
 workflows only ever printed "skipped" for it and it never produced a package. The pure-upstream
 tree is still reachable via `git archive 2313dea:src`, which is what `scripts/check.sh`'s test
 section uses to prove the patch set can still be re-applied.
+
+The rename changes nothing a device can see. Our channel name lives only in the `MANIFEST` text
+file inside each archive; the `channel` field in the `manifest.json` that nodes actually read is
+`is_stable ? 'stable' : 'beta'` (`ManifestService.php:297`) — a different concept entirely.
+`channel` has also been dropped from `ctl-publish`'s provenance fingerprint (it is only a label
+pointing at `release_source_commit`, which is itself in the fingerprint, so it adds no
+discrimination), so re-running an already-published tag still verdicts SKIP instead of failing on
+a stale label baked into the posted bytes.
 
 ## Baseline and patch set as of 2026-10-02
 
@@ -41,7 +51,7 @@ riscv64 before that line existed, and macOS/Windows only escaped it because thei
 `uint64_t` as `unsigned long long`. Every new author snapshot has to re-emit that line in its
 baseline commit, or the 64-bit legs die at `src/gnb_conf_file.o`.
 
-`main-patched` = release commit `e0228d9`: baseline commit `98f8b4e` (imported from the verified
+`main` = release commit `e0228d9`: baseline commit `98f8b4e` (imported from the verified
 ZIP, SHA256 `2454c303dabd...`, re-extracted and compared byte for byte; the only difference is one
 empty directory) plus one proxy commit touching eight files. `git diff 98f8b4e..e0228d9` is the
 complete list of our source changes — if that ever shows a ninth file, something unrelated has
@@ -69,9 +79,9 @@ Production keeps the naming contract `mynet_ctl` parses
 `ReleaseDomainService::parseFilename`), so
 the channel lives in the MANIFEST and the artifact directory rather than the filename.
 Internal builds insert the channel segment after the arch, e.g.
-`gnb_linux_mipsel_x-dev-patched_v1.6.8.tgz` (that channel has since been folded into
-`main-patched`, which is production — the internal path stays as the guard for any future
-non-production channel); the arch field cannot contain an underscore,
+`gnb_linux_mipsel_x-dev-patched_v1.6.8.tgz` (that channel has since been folded into the one
+surviving `main` channel, which is production — the internal path stays as the guard for any
+future non-production channel); the arch field cannot contain an underscore,
 so such a name is unparseable by the registry and a dev package can neither overwrite a
 production package nor be registered as one. Publish jobs classify by artifact directory
 name against `RELEASE-SOURCES`, never by filename glob, and only production packages are

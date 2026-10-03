@@ -1,7 +1,7 @@
 #!/bin/sh
 # gnb-dist.sh — 从「固定发行源码提交」出通道产物（不 apply 补丁）
 #
-#   sh scripts/gnb-dist.sh --channel main-patched --os darwin --arch arm64
+#   sh scripts/gnb-dist.sh --channel main --os darwin --arch arm64
 #                          [--make make] [--make-var K=V] [--target install]
 #                          [--strip-cmd strip] [--tag v1.6.8]
 #                          [--out DIR] [--dist-dir DIR] [--archive] [--keep]
@@ -23,7 +23,7 @@ set -e
 usage() { awk 'NR==1{next} /^#/{sub(/^# ?/, ""); print; next} {exit}' "$0"; exit 1; }
 die() { echo "错误: $*" >&2; exit 1; }
 
-CHANNEL="main-patched"
+CHANNEL="main"
 OS=""
 ARCH=""
 MAKE="make"

@@ -10,7 +10,7 @@ env:
   PROJECT: gnb
   BASE_URL: "https://download.mynet.club/gnb"
   # 通道口径见 packages/RELEASE-SOURCES（2026-10-04 起只有一条）。
-  CHANNELS: main-patched
+  CHANNELS: main
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
