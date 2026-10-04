@@ -24,7 +24,16 @@ fail=0
 bad() { printf '  ✗ %s\n' "$1"; fail=1; }
 ok()  { printf '  ✓ %s\n' "$1"; }
 
-ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+# `|| true` 不能省：本脚本开了 set -e，bare 仓里 --show-toplevel 返回非零会让
+# 赋值语句直接终止脚本（rc=128），下面那段「跳过必须响」根本执行不到。
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
+if [ -z "$ROOT" ]; then
+  # bare 仓没有工作树，--show-toplevel 必然失败（mynet_gnb 就是 bare + linked worktree）。
+  # 此前这里写的是 `|| exit 0` —— **静默通过**，正是下面那条教训要禁的形态。跳过必须响。
+  echo "  ⚠⚠ guard 跳过：当前在 bare 仓里（无工作树，取不到 --show-toplevel）"
+  echo "  ⚠⚠ 本次**没有检查任何红线**；要查请去任一 linked worktree：git worktree list"
+  exit 0
+fi
 cd "$ROOT"
 # 用 --git-dir 而不是 "$ROOT/.git"：worktree 的 .git 是个**文件**，mkdir -p 会直接失败，
 # 于是含 GUARD-OK 的合法提交被守护自己撞死（--no-verify 绕过恰恰是该被避免的后果）。
@@ -114,18 +123,48 @@ else
 fi
 
 # A3 敏感文件名
+#
+# ⚠️ A3 判的是**文件名**，所以「在违规那一行加 GUARD-OK」这条通用豁免口径对它不成立
+# （文件名不在文件的任何一行里）。A3 的豁免因此另立一条**更严**的判据，两条同时成立才放行：
+#   ① 文件**已在 HEAD 里** —— 只豁免「历史上已入库、这次只是被改动」的文件；
+#      **新入库的敏感名文件一律硬拦**（2026-10-04 gnb 事故正是「新文件」形态，不能开这条路）；
+#   ② 文件内容里带 `GUARD-OK <原因>` 标注 —— 理由写在文件里，随 diff 可见并进审计日志。
+# 真实场景：mynet_gui 的 `.env` / `.env.dev` / `.env.embed` / `.env.prod` 是**前端构建期
+# 公开配置**（Quasar 按固定文件名查找，`@quasar/app-vite/lib/utils/env.js:31`，改不了名），
+# 里面只有 API 域名与 Reverb 的**客户端公开值**（app key/id，签发用的 app secret 从不进前端），
+# 但每次编辑都要撞 A3 一次 —— 没有这条路就会变成「教人用 --no-verify」。
 a3=0
+a3_ex=0
+a3_exempted() { # 0 = 可豁免（历史在库 + 文件内标注）
+  _f=$1
+  git cat-file -e "HEAD:$_f" 2>/dev/null || return 1
+  if [ "$MODE" = staged ]; then
+    git show ":$_f" 2>/dev/null | grep -q 'GUARD-OK'
+  else
+    grep -q 'GUARD-OK' -- "$_f" 2>/dev/null
+  fi
+}
 for f in $FILES; do
   b=$(basename "$f")
   case "$b" in
     .env|.env.*|*.pem|*.key|id_rsa*|id_ed25519*|*.private)
       case "$b" in
         .env.example|.env.sample|.env.template) ;; # 无密钥模板，允许
-        *) bad "A3 敏感文件不得入库: $f"; a3=1 ;;
+        *)
+          if a3_exempted "$f"; then
+            printf '  ⚠ A3 已豁免（历史上已入库 + 文件内标注理由）: %s\n' "$f"
+            mkdir -p "$(dirname "$EXEMPT_LOG")"
+            printf '%s | A3 %s\n' "$(date -u +%FT%TZ)" "$f" >> "$EXEMPT_LOG"
+            a3_ex=$((a3_ex + 1))
+          else
+            bad "A3 敏感文件不得入库: $f"; a3=1
+          fi ;;
       esac ;;
   esac
 done
-[ "$a3" -eq 0 ] && ok "A3 无敏感文件"
+if [ "$a3" -eq 0 ]; then
+  if [ "$a3_ex" -eq 0 ]; then ok "A3 无敏感文件"; else ok "A3 无新增敏感文件（$a3_ex 个历史文件按标注豁免）"; fi
+fi
 
 # A4 归档内容扫描 —— A2/A3 都看不见压缩包**里面**
 # 2026-10-04 真实事故：mynet_gnb 的 packages/*/itest/backup-*/ 把生产节点
@@ -222,16 +261,27 @@ fi
 
 # ── B 结构红线（架构约束，违反会静默扩散）──────────────────
 # B1 mynet_gnb/src/ 只读 —— 补丁包机制依赖上游树原样
+#    只在 mynet_gnb 仓内有意义；其他仓不能证明兄弟仓状态。
+#    ⚠️ 判仓别用 $ROOT（工作树路径）而用 --absolute-git-dir：gnb 是 bare 仓 +
+#    linked worktree，实际编辑入口 `.wt/gnb-actions` 的路径里**不含** mynet_gnb，
+#    用 $ROOT 匹配会让这条红线在 gnb 上永远静默跳过（此前正是如此）。
 b1=0
-case "$ROOT" in
+REPO_ID=$(git rev-parse --absolute-git-dir 2>/dev/null || true)
+case "$REPO_ID" in
   *mynet_gnb*)
     for f in $FILES; do
       case "$f" in
         src/*) bad "B1 mynet_gnb/src/ 是上游树，改动须走补丁包（packages/）: $f"; b1=1 ;;
       esac
-    done ;;
+    done
+    [ "$b1" -eq 0 ] && ok "B1 mynet_gnb/src/ 未被直改"
+    ;;
+  *)
+    # 不许打「✓ 未被直改」：本仓根本没有 mynet_gnb/src/，什么都没查。
+    # 同本文件开头那条教训 —— 把「没跑」伪装成「通过」的门禁等于没有门禁。
+    echo "  · B1 跳过（当前仓非 mynet_gnb；src/ 状态请在 mynet_gnb 根目录跑 guard）"
+    ;;
 esac
-[ "$b1" -eq 0 ] && ok "B1 mynet_gnb/src/ 未被直改"
 
 # B2 mynetd 不得依赖系统能力（执行器架构：mynetd 纯通信）
 #    详见 AGENTS.md §1.2 —— 只扫 mynetd/ 的**import 路径**（注释里提到 detector 是允许的）
@@ -284,16 +334,29 @@ for f in $FILES; do
 done
 [ "$c1" -eq 0 ] && ok "C1 无格式化产物文件名"
 
-# C2 端口漂移：本机 API / WebUI 端口应为 8096（只扫源码，不扫 docs/.githooks）
+# C2 端口漂移：mynetd 本机 API / WebUI 端口应为 8096（只扫源码，不扫 docs/.githooks）
+# ⚠️ 判据是**断言 SSOT**，不是枚举「已知写错过的端口」。原来只有下面这条黑名单
+# （8720/8008 两个历史错值），于是 8711 照样漏了过去：mynet_desktop/nsis 把 mynetd
+# 起在 8711，而面板快捷方式指 8096 → 装完点开是空页面，181 节点真机复现过
+# （archive/2026-09/reinstall-181-report-20260930.md:97）。枚举已知错值追不上新错值。
+# SSOT：8096 = mynet_agent/mynet/port_owner.go 的 DefaultLocalAPI。
+# 排除测试/调试路径：e2e 与 debug 脚手架故意用 18733/18811/18096 这类不冲突的临时端口。
 C2PAT='127\.0\.0\.1:8720|127\.0\.0\.1:8008|localhost:8720|localhost:8008' # GUARD-OK 自检正则
 c2=0
 for f in $FILES; do
   case "$f" in
     docs/*|*/docs/*|.githooks/*|*/.githooks/*|*.md) continue ;;
+    scripts/e2e/*|*/scripts/e2e/*|debug/*|*/debug/*|test/*|tests/*|*/test/*|*/tests/*|*_test.*) continue ;;
   esac
   if added_in_file "$f" | grep -qE "$C2PAT"; then
     bad "C2 端口漂移（本机 API/WebUI 应为 8096）: $f"; c2=1
   fi
+  # 提到 mynetd 的行，其 loopback 端口必须是 8096
+  for c2p in $(added_in_file "$f" | grep -E 'mynetd' | grep -oE '(127\.0\.0\.1|localhost):[0-9]+' | sed 's/.*://' | sort -u); do
+    [ "$c2p" = 8096 ] && continue
+    bad "C2 端口漂移：mynetd 本机 API 应为 8096（SSOT: mynet_agent/mynet/port_owner.go DefaultLocalAPI），实为 $c2p: $f"
+    c2=1
+  done
 done
 [ "$c2" -eq 0 ] && ok "C2 端口无漂移"
 
