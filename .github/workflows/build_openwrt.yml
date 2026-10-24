@@ -1,8 +1,9 @@
-name: Build GNB For OpenWrt (SDK 24.10)
+name: Build GNB For OpenWrt (SDK 23.05 / 24.10 / 25.12)
 
-# 使用官方 OpenWrt SDK 24.10 编译，对应本地 build_openwrt.sh 的逻辑
-# 优势：GCC 13.3.0 + musl 1.2.5，与 OpenWrt 官方包使用同一工具链，兼容性最好
-# 产物为动态链接 musl libc，OpenWrt 设备上有 musl 运行时，可直接运行
+# 官方 OpenWrt SDK 多版本编译（musl **动态**，设备自带 ld-musl，不 static）。
+# 2026-10-24 裁定：OpenWrt 一律 SDK + musl 动态；不要 glibc static。
+# 现行 release：23.05.x / 24.10.x / 25.12.x；**尚无 26.x**。
+# 参考：192.168.0.2（ImmortalWrt）即 musl 动态 gnb 1.6.8（/usr/bin/gnb）。
 
 on:
   workflow_dispatch:
@@ -12,8 +13,6 @@ on:
 
 env:
   PROJECT: gnb
-  SDK_VERSION: "24.10.0"
-  SDK_GCC: "13.3.0"
   # 通道口径见 packages/RELEASE-SOURCES（2026-10-04 起只有一条）。
   CHANNELS: main
 
@@ -63,13 +62,28 @@ jobs:
 
   build:
     needs: plan
-    name: OpenWrt ${{ matrix.arch }} (${{ matrix.channel }})
+    name: OpenWrt ${{ matrix.sdk.series }} ${{ matrix.arch }} (${{ matrix.channel }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         channel: ${{ fromJSON(needs.plan.outputs.channels) }}
+        # 多 OpenWrt release 系列：各自 SDK/gcc/压缩格式。
+        # 23 SDK 为 tar.xz，24+ 为 tar.zst；二进制均为 musl 动态。
+        sdk:
+          - series: "23.05"
+            version: "23.05.6"
+            gcc: "12.3.0"
+            ext: "tar.xz"
+          - series: "24.10"
+            version: "24.10.8"
+            gcc: "13.3.0"
+            ext: "tar.zst"
+          - series: "25.12"
+            version: "25.12.6"
+            gcc: "14.3.0"
+            ext: "tar.zst"
         # arch 必须是真正的矩阵轴。写成 matrix.include 的独立条目时，GitHub 只把
         # 最后一条并进组合（上一版因此只出了 armv7，其余五个 target 静默缺席）。
         # 每个 arch 对应的 SDK profile 见下面的 Resolve SDK profile 步骤。
@@ -154,24 +168,28 @@ jobs:
           echo "sdk_libc=$3"    >> "$GITHUB_OUTPUT"
           echo "pkg_arch=$4"    >> "$GITHUB_OUTPUT"
 
-      - name: Cache OpenWrt SDK ${{ env.SDK_VERSION }} / ${{ matrix.arch }}
+      - name: Cache OpenWrt SDK ${{ matrix.sdk.version }} / ${{ matrix.arch }}
         id: sdk_cache
         uses: actions/cache@v4
         with:
-          path: /opt/openwrt-sdk/${{ env.SDK_VERSION }}/${{ steps.sdk.outputs.sdk_name }}
-          key: openwrt-sdk-${{ env.SDK_VERSION }}-${{ steps.sdk.outputs.sdk_name }}-gcc${{ env.SDK_GCC }}-v1
+          path: /opt/openwrt-sdk/${{ matrix.sdk.version }}/${{ steps.sdk.outputs.sdk_name }}
+          key: openwrt-sdk-${{ matrix.sdk.version }}-${{ steps.sdk.outputs.sdk_name }}-gcc${{ matrix.sdk.gcc }}-v1
 
       - name: Download and extract OpenWrt SDK
         if: steps.sdk_cache.outputs.cache-hit != 'true'
         run: |
-          SDK_FILE="openwrt-sdk-${{ env.SDK_VERSION }}-${{ steps.sdk.outputs.sdk_name }}_gcc-${{ env.SDK_GCC }}_${{ steps.sdk.outputs.sdk_libc }}.Linux-x86_64.tar.zst"
-          SDK_URL="https://downloads.openwrt.org/releases/${{ env.SDK_VERSION }}/targets/${{ steps.sdk.outputs.sdk_target }}/${SDK_FILE}"
+          set -euo pipefail
+          SDK_FILE="openwrt-sdk-${{ matrix.sdk.version }}-${{ steps.sdk.outputs.sdk_name }}_gcc-${{ matrix.sdk.gcc }}_${{ steps.sdk.outputs.sdk_libc }}.Linux-x86_64.${{ matrix.sdk.ext }}"
+          SDK_URL="https://downloads.openwrt.org/releases/${{ matrix.sdk.version }}/targets/${{ steps.sdk.outputs.sdk_target }}/${SDK_FILE}"
           echo "Downloading SDK: $SDK_URL"
           wget -q --show-progress -T 30 -t 3 -O "/tmp/${SDK_FILE}" "$SDK_URL"
-          mkdir -p "/opt/openwrt-sdk/${{ env.SDK_VERSION }}"
-          cd "/opt/openwrt-sdk/${{ env.SDK_VERSION }}"
-          tar --use-compress-program=unzstd -xf "/tmp/${SDK_FILE}"
-          # 将解压出的目录统一重命名为 sdk_name，方便后续步骤定位
+          mkdir -p "/opt/openwrt-sdk/${{ matrix.sdk.version }}"
+          cd "/opt/openwrt-sdk/${{ matrix.sdk.version }}"
+          case "${{ matrix.sdk.ext }}" in
+            tar.zst) tar --use-compress-program=unzstd -xf "/tmp/${SDK_FILE}" ;;
+            tar.xz)  tar -xJf "/tmp/${SDK_FILE}" ;;
+            *) echo "unsupported ext ${{ matrix.sdk.ext }}" >&2; exit 1 ;;
+          esac
           EXTRACTED=$(ls -d openwrt-sdk-* 2>/dev/null | head -1)
           if [ -z "$EXTRACTED" ]; then
             echo "ERROR: SDK extraction failed, no openwrt-sdk-* directory found"
@@ -180,12 +198,12 @@ jobs:
           fi
           mv "$EXTRACTED" "${{ steps.sdk.outputs.sdk_name }}"
           rm -f "/tmp/${SDK_FILE}"
-          echo "SDK ready at: /opt/openwrt-sdk/${{ env.SDK_VERSION }}/${{ steps.sdk.outputs.sdk_name }}"
+          echo "SDK ready at: /opt/openwrt-sdk/${{ matrix.sdk.version }}/${{ steps.sdk.outputs.sdk_name }}"
 
       - name: Find SDK toolchain GCC
         id: toolchain
         run: |
-          SDK_DIR="/opt/openwrt-sdk/${{ env.SDK_VERSION }}/${{ steps.sdk.outputs.sdk_name }}"
+          SDK_DIR="/opt/openwrt-sdk/${{ matrix.sdk.version }}/${{ steps.sdk.outputs.sdk_name }}"
           echo "SDK_DIR: $SDK_DIR"
           echo "Toolchain dirs:"
           ls "$SDK_DIR/staging_dir/" | grep toolchain || echo "(none)"
@@ -220,7 +238,7 @@ jobs:
         run: |
           set -euo pipefail
           arch='${{ steps.sdk.outputs.pkg_arch }}'
-          base="https://downloads.openwrt.org/releases/${{ env.SDK_VERSION }}/packages/$arch/base"
+          base="https://downloads.openwrt.org/releases/${{ matrix.sdk.version }}/packages/$arch/base"
           listing="$(curl -fsSL "$base/")"
           hits="$(printf '%s\n' "$listing" | grep -oE 'zlib-dev_[^"<>]*\.ipk' | sort -u || true)"
           n="$(printf '%s' "$hits" | grep -c '' || true)"
@@ -263,10 +281,12 @@ jobs:
             STRIP_ARG="--strip-cmd ${{ steps.toolchain.outputs.strip }}"
           fi
           # shellcheck disable=SC2086  # strip 命令可能带参数，这里就是要按词传下去
+          # musl 动态（SDK 默认）：LDFLAGS 只加 zlib 搜索路径，禁止 -static
           sh scripts/gnb-dist.sh \
             --channel '${{ matrix.channel }}' \
             --os openwrt \
             --arch '${{ matrix.arch }}' \
+            --sdk-series '${{ matrix.sdk.series }}' \
             --tag "${{ steps.tag.outputs.tag }}" \
             --make-var "CC=${{ steps.toolchain.outputs.cc }}" \
             --make-var "LDFLAGS=-L${{ steps.zlib.outputs.libdir }}" \
@@ -284,7 +304,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: gnb-${{ matrix.channel }}-openwrt-${{ matrix.arch }}
+          name: gnb-${{ matrix.channel }}-openwrt-${{ matrix.sdk.series }}-${{ matrix.arch }}
           path: |
             .pkg/${{ steps.tag.outputs.tag }}/*/*.tgz
             .pkg/${{ steps.tag.outputs.tag }}/*/*.zip

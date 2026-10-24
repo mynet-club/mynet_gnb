@@ -26,6 +26,7 @@ die() { echo "错误: $*" >&2; exit 1; }
 CHANNEL="main"
 OS=""
 ARCH=""
+SDK_SERIES=""
 MAKE="make"
 TARGET="install"
 STRIP_CMD=""
@@ -57,6 +58,7 @@ while [ $# -gt 0 ]; do
         --channel)   CHANNEL="$2"; shift 2 ;;
         --os)        OS="$2"; shift 2 ;;
         --arch)      ARCH="$2"; shift 2 ;;
+        --sdk-series) SDK_SERIES="$2"; shift 2 ;;
         --make)      MAKE="$2"; shift 2 ;;
         --target)    TARGET="$2"; shift 2 ;;
         --make-var)  printf '%s\n' "$2" >> "$MAKE_VARS"; shift 2 ;;
@@ -130,6 +132,14 @@ case "$AUTHOR_IDENTITY" in
             *) TAG="$TAG-dev" ;;
         esac ;;
 esac
+# 多 OpenWrt SDK 系列并存：series 写入 version 后缀，避免同名互相覆盖。
+# （production 包名契约 {name}_{platform}_{arch}_{version} 不扩段；系列走 version。）
+if [ -n "$SDK_SERIES" ]; then
+    case "$TAG" in
+        *-owrt*) : ;;
+        *) TAG="${TAG}-owrt${SDK_SERIES}" ;;
+    esac
+fi
 if [ "$MAKE_ARCHIVE" -eq 1 ] && [ -z "$ARCH" ]; then
     # 不带 arch 的包名会被 ctl 的严格正则误解析（arch 段会吃掉 version），出包必须显式给 arch
     die "打归档包必须传 --arch（发行注册表按 {name}_{platform}_{arch}_{version}.{ext} 解析）"
