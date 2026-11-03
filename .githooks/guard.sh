@@ -168,7 +168,7 @@ fi
 
 # A4 归档内容扫描 —— A2/A3 都看不见压缩包**里面**
 # 2026-10-04 真实事故：mynet_gnb 的 packages/*/itest/backup-*/ 把生产节点
-# (10.182.236.180) 与公司整网网关 (192.168.0.2) 的 *.private、credential.json
+# (10.182.236.180) 与旁路网关 (192.168.0.2) 的 *.private、credential.json
 # 打进 .tgz 提交并推到 GitHub。三层全瞎：
 #   A2 只匹配 PEM 文本 `BEGIN … PRIVATE KEY`，而 GNB 的 .private 是裸 32 字节
 #      ed25519 二进制（AGENTS.md §1.1：clamp(SHA512(seed))），**没有 PEM 头**；
@@ -260,26 +260,17 @@ if [ "$a4" -eq 0 ]; then
 fi
 
 # ── B 结构红线（架构约束，违反会静默扩散）──────────────────
-# B1 mynet_gnb/src/ 只读 —— 补丁包机制依赖上游树原样
-#    只在 mynet_gnb 仓内有意义；其他仓不能证明兄弟仓状态。
-#    ⚠️ 判仓别用 $ROOT（工作树路径）而用 --absolute-git-dir：gnb 是 bare 仓 +
-#    linked worktree，实际编辑入口 `.wt/gnb-actions` 的路径里**不含** mynet_gnb，
-#    用 $ROOT 匹配会让这条红线在 gnb 上永远静默跳过（此前正是如此）。
-b1=0
+# B1 mynet_gnb/src/ 只读 —— 2026-11-03 用户裁定后退役
+#    裁定：GNB 维护自有版本，直接修改 mynet_gnb 源码并按正常提交/构建流程交付，
+#    不再要求 format-patch / packages 补丁包 / src/ 保持上游原样。
+#    保留显式跳过打印：不许把「不查」伪装成「通过」（见文件开头教训）。
 REPO_ID=$(git rev-parse --absolute-git-dir 2>/dev/null || true)
 case "$REPO_ID" in
   *mynet_gnb*)
-    for f in $FILES; do
-      case "$f" in
-        src/*) bad "B1 mynet_gnb/src/ 是上游树，改动须走补丁包（packages/）: $f"; b1=1 ;;
-      esac
-    done
-    [ "$b1" -eq 0 ] && ok "B1 mynet_gnb/src/ 未被直改"
+    echo "  · B1 跳过（2026-11-03 裁定：GNB 自有版本，src/ 可直接改）"
     ;;
   *)
-    # 不许打「✓ 未被直改」：本仓根本没有 mynet_gnb/src/，什么都没查。
-    # 同本文件开头那条教训 —— 把「没跑」伪装成「通过」的门禁等于没有门禁。
-    echo "  · B1 跳过（当前仓非 mynet_gnb；src/ 状态请在 mynet_gnb 根目录跑 guard）"
+    echo "  · B1 跳过（当前仓非 mynet_gnb）"
     ;;
 esac
 

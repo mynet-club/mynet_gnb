@@ -22,7 +22,7 @@ test_proxy_conf
 
 # ── 节点密钥 / 集成测试备份：一律不入库 ──────────────────────
 # 2026-10-04 事故：packages/*/itest/backup-20260930*/ 下的 .tgz 把生产节点
-# 10.182.236.180 与公司整网网关 192.168.0.2 的 *.private、credential.json
+# 10.182.236.180 与旁路网关 192.168.0.2 的 *.private、credential.json
 # 提交并推上了 GitHub（4 条分支，13 个归档，9 个敏感条目）。
 # 当时 guard 的 A2/A3 都拦不住：A2 只认 PEM 文本 `BEGIN … PRIVATE KEY`，而
 # GNB 私钥是裸 32 字节 ed25519 二进制；A3 只认**入库文件名**，而入库的是
