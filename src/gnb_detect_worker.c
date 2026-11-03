@@ -32,6 +32,7 @@
 #include <unistd.h>
 
 #include "gnb.h"
+#include "gnb_utc_runtime.h"
 #include "gnb_node.h"
 #include "gnb_worker.h"
 #include "gnb_time.h"
@@ -68,6 +69,7 @@ static void detect_node_address(gnb_worker_t *gnb_detect_worker, gnb_node_t *nod
     gnb_payload16_set_data_len( detect_worker_ctx->index_frame_payload, sizeof(detect_addr_frame_t) );
     detect_addr_frame_t *detect_addr_frame = (detect_addr_frame_t *)detect_worker_ctx->index_frame_payload->data;
     memset(detect_addr_frame, 0, sizeof(detect_addr_frame_t));
+    if (gnb_utc_action(gnb_core, node->uuid64) != GNB_UTC_NATIVE) return;
     detect_addr_frame->data.arg0 = 'd';
     memcpy(detect_addr_frame->data.src_key512, gnb_core->local_node->key512, 64);
     detect_addr_frame->data.src_uuid64 = gnb_htonll(gnb_core->local_node->uuid64);

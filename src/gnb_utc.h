@@ -1,5 +1,5 @@
 /* UTC local path policy. No VPN wire changes, transport or authorization issuer.
- * Experimental internal API: not a utc-conf runtime capability yet. */
+ * Internal table API; the versioned local execution format is utc-conf-v1. */
 #ifndef GNB_UTC_H
 #define GNB_UTC_H
 #include <stdint.h>
@@ -12,7 +12,8 @@ typedef enum { GNB_UTC_DIRECT = 0, GNB_UTC_EXPORT = 1 } gnb_utc_mode_t;
 typedef enum { GNB_UTC_NATIVE = 0, GNB_UTC_FORWARD = 1, GNB_UTC_BLOCK = 2 } gnb_utc_action_t;
 typedef enum {
     GNB_UTC_OK = 0, GNB_UTC_INVALID = -1, GNB_UTC_REWIND = -2,
-    GNB_UTC_CONFLICT = -3, GNB_UTC_CAPACITY = -4
+    GNB_UTC_CONFLICT = -3, GNB_UTC_CAPACITY = -4,
+    GNB_UTC_UNSUPPORTED = -5, GNB_UTC_SCOPE = -6
 } gnb_utc_result_t;
 /* Host-order family (4/6), port and scope_id; address is network-order bytes.
  * IPv4 uses the first four bytes and requires the remaining bytes to be zero. */
@@ -39,6 +40,7 @@ typedef struct {
 typedef struct {
     pthread_mutex_t lock;
     uint64_t config_gen;
+    uint64_t tx_packets, tx_blocked, tx_errors, rx_dropped; /* current boot diagnostics */
     size_t count;
     size_t snapshot_count;
     uint64_t snapshot_peers[GNB_UTC_MAX_PEERS];

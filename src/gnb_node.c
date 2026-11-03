@@ -40,6 +40,7 @@
 #include "ed25519/sha512.h"
 #include "gnb_unified_forwarding.h"
 #include "gnb_binary.h"
+#include "gnb_utc_runtime.h"
 
 gnb_node_t * gnb_node_init(gnb_core_t *gnb_core, gnb_uuid_t uuid64) {
     gnb_node_t *node = &gnb_core->ctl_block->node_zone->node[gnb_core->node_nums];
@@ -537,6 +538,9 @@ finish:
 }
 
 int gnb_send_to_node(gnb_core_t *gnb_core, gnb_node_t *node, gnb_payload16_t *payload, unsigned char addr_type_bits) {
+    /* Index service traffic keeps its native address; NODE frames are pair traffic. */
+    if (payload->type == GNB_PAYLOAD_TYPE_NODE &&
+        gnb_utc_send(gnb_core, node->uuid64, payload, GNB_PAYLOAD16_FRAME_SIZE(payload))) return 0;
     if ( GNB_ADDR_TYPE_IPV6 == gnb_core->conf->udp_socket_type ) {
         goto send_by_ipv6;
     }
@@ -560,6 +564,7 @@ finish:
 }
 
 int gnb_p2p_forward_payload_to_node(gnb_core_t *gnb_core, gnb_node_t *node, gnb_payload16_t *payload){
+    if (gnb_utc_send(gnb_core, node->uuid64, payload, GNB_PAYLOAD16_FRAME_SIZE(payload))) return 0;
     int ret;
     // gnb_core->conf->udp_socket_type 默认是 GNB_ADDR_TYPE_IPV4 | GNB_ADDR_TYPE_IPV6;
     if ( GNB_ADDR_TYPE_IPV4 == gnb_core->conf->udp_socket_type ) {
@@ -598,6 +603,7 @@ finish:
 #define GNB_SEND_BY_FWD_IPV6 (0x3)
 #define GNB_SEND_BY_FWD_IPV4 (0x4)
 void gnb_std_uf_forward_payload_to_node(gnb_core_t *gnb_core, gnb_node_t *node, gnb_payload16_t *payload) {
+    if (gnb_utc_send(gnb_core, node->uuid64, payload, GNB_PAYLOAD16_FRAME_SIZE(payload))) return;
     int ret;
     int send_flag = GNB_SEND_BY_UNSET;
     gnb_node_t *fwd_node;

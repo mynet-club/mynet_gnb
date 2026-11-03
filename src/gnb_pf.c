@@ -18,6 +18,7 @@
 #include <stdlib.h>
 
 #include "gnb.h"
+#include "gnb_utc_runtime.h"
 #include "gnb_node.h"
 #include "gnb_hash32.h"
 #include "gnb_pf.h"
@@ -339,6 +340,11 @@ void gnb_pf_tun(gnb_core_t *gnb_core, gnb_pf_core_t *pf_core, gnb_payload16_t *p
         }
     }
 
+    if (pf_ctx_st.dst_node && gnb_utc_action(gnb_core, pf_ctx_st.dst_node->uuid64) != GNB_UTC_NATIVE) {
+        pf_ctx_st.fwd_node = pf_ctx_st.dst_node;
+        pf_ctx_st.universal_udp4_relay = 0;
+        goto pf_tun_fwd;
+    }
     /*
      * 一般的,forwarding 的优先级是 relay_forwarding > unified_forwarding > direct_forwarding > std_forwarding
      * 以下条件跳转是确保 relay_forwarding > unified_forwarding
@@ -414,6 +420,10 @@ pf_tun_fwd:
             break;
         }
     }
+    /* A concurrent activation must not send an already chosen native relay. */
+    if (pf_ctx_st.dst_node && pf_ctx_st.fwd_node != pf_ctx_st.dst_node &&
+        gnb_utc_action(gnb_core, pf_ctx_st.dst_node->uuid64) != GNB_UTC_NATIVE)
+        goto pf_tun_finish;
     gnb_p2p_forward_payload_to_node(gnb_core, pf_ctx_st.fwd_node, pf_ctx_st.fwd_payload);
     if ( 1 == gnb_core->conf->if_dump ) {
         GNB_LOG3(gnb_core->log, GNB_LOG_ID_PF, "payload frome TUN to INET node=%llu [%s]\n",
@@ -482,14 +492,14 @@ void gnb_pf_inet(gnb_core_t *gnb_core, gnb_pf_core_t *pf_core, gnb_payload16_t *
     }
     if ( GNB_PAYLOAD_SUB_TYPE_IPFRAME_UNIFIED == payload->sub_type ) {
         //如果 ip分组 不是转发到本节点，就转发到目的节点
-        ret = gnb_unified_forwarding_inet(gnb_core, payload);
+        ret = gnb_unified_forwarding_inet(gnb_core, payload, source_node_addr);
         if ( UNIFIED_FORWARDING_TO_TUN != ret ) {
             goto pf_inet_finish;
         }
     }
     if ( GNB_PAYLOAD_SUB_TYPE_IPFRAME_UNIFIED_MULTI_PATH == payload->sub_type ) {
         //如果 ip分组 不是转发到本节点，就转发到目的节点
-        ret = gnb_unified_forwarding_multi_path_inet(gnb_core, payload);
+        ret = gnb_unified_forwarding_multi_path_inet(gnb_core, payload, source_node_addr);
         if ( UNIFIED_FORWARDING_TO_TUN != ret ) {
             goto pf_inet_finish;
         }
@@ -587,6 +597,8 @@ void gnb_pf_inet(gnb_core_t *gnb_core, gnb_pf_core_t *pf_core, gnb_payload16_t *
             break;
         }
     }
+    if (pf_ctx_st.src_node && !gnb_utc_receive(gnb_core, pf_ctx_st.src_node->uuid64, source_node_addr))
+        goto pf_inet_finish;
     fwd_uuid64 = NULL!=pf_ctx_st.fwd_node ? pf_ctx_st.fwd_node->uuid64:0;
     if ( NULL == pf_ctx_st.src_node ) {
         goto pf_inet_finish;

@@ -31,7 +31,7 @@ int gnb_unified_forwarding_with_multi_path_tun(gnb_core_t *gnb_core, gnb_pf_ctx_
 #define UNIFIED_FORWARDING_TO_TUN   0
 #define UNIFIED_FORWARDING_TO_INET  1
 void gnb_setup_unified_forwarding_nodeid(gnb_core_t *gnb_core, gnb_node_t *dst_node);
-int gnb_unified_forwarding_inet(gnb_core_t *gnb_core, gnb_payload16_t *payload);
-int gnb_unified_forwarding_multi_path_inet(gnb_core_t *gnb_core, gnb_payload16_t *payload);
+int gnb_unified_forwarding_inet(gnb_core_t *gnb_core, gnb_payload16_t *payload, gnb_sockaddress_t *source);
+int gnb_unified_forwarding_multi_path_inet(gnb_core_t *gnb_core, gnb_payload16_t *payload, gnb_sockaddress_t *source);
 
 #endif

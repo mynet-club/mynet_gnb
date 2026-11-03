@@ -16,6 +16,7 @@
 */
 
 #include "gnb.h"
+#include "gnb_utc_runtime.h"
 #include "gnb_node.h"
 #include "gnb_hash32.h"
 #include "gnb_pf.h"
@@ -24,16 +25,7 @@
 #include "gnb_unified_forwarding.h"
 #include "protocol/network_protocol.h"
 
-#pragma pack(push, 1)
-
-typedef struct _gnb_unified_forwarding_frame_foot_t {
-    gnb_uuid_t src_nodeid;
-    gnb_uuid_t dst_nodeid;
-    gnb_uuid_t unified_forwarding_nodeid;
-    uint64_t unified_forwarding_seq;
-} __attribute__ ((__packed__)) gnb_unified_forwarding_frame_foot_t;
-
-#pragma pack(pop)
+#include "gnb_route_frame.h"
 
 void gnb_setup_unified_forwarding_nodeid(gnb_core_t *gnb_core, gnb_node_t *dst_node) {
     int i;
@@ -65,6 +57,7 @@ int gnb_unified_forwarding_tun(gnb_core_t *gnb_core, gnb_pf_ctx_t *pf_ctx) {
     gnb_node_t *unified_forwarding_node;
 
     dst_node = pf_ctx->dst_node;
+    if (gnb_utc_action(gnb_core, dst_node->uuid64) != GNB_UTC_NATIVE) return -1;
     payload  = pf_ctx->fwd_payload;
 
     gnb_setup_unified_forwarding_nodeid(gnb_core, dst_node);
@@ -101,6 +94,7 @@ int gnb_unified_forwarding_tun(gnb_core_t *gnb_core, gnb_pf_ctx_t *pf_ctx) {
 
     unified_forwarding_frame_foot->unified_forwarding_seq = gnb_htonll(dst_node->unified_forwarding_send_seq);
 
+    if (gnb_utc_action(gnb_core, dst_node->uuid64) != GNB_UTC_NATIVE) return -1;
     gnb_p2p_forward_payload_to_node(gnb_core, unified_forwarding_node, payload);
     dst_node->unified_forwarding_node_ts_sec = gnb_core->now_time_sec;
 
@@ -130,6 +124,7 @@ int gnb_unified_forwarding_with_multi_path_tun(gnb_core_t *gnb_core, gnb_pf_ctx_
     }
 
     dst_node = pf_ctx->dst_node;
+    if (gnb_utc_action(gnb_core, dst_node->uuid64) != GNB_UTC_NATIVE) return -1;
     payload  = pf_ctx->fwd_payload;
 
     in_payload_size = gnb_payload16_size(payload);
@@ -162,7 +157,8 @@ int gnb_unified_forwarding_with_multi_path_tun(gnb_core_t *gnb_core, gnb_pf_ctx_
             continue;
         }
         unified_forwarding_frame_foot->unified_forwarding_nodeid = gnb_htonll(dst_node->unified_forwarding_nodeid);
-        gnb_p2p_forward_payload_to_node(gnb_core, unified_forwarding_node, payload);
+        if (gnb_utc_action(gnb_core, dst_node->uuid64) != GNB_UTC_NATIVE) return -1;
+    gnb_p2p_forward_payload_to_node(gnb_core, unified_forwarding_node, payload);
         GNB_LOG3(gnb_core->log, GNB_LOG_ID_PF, "*>> Unified Forwarding with Multi-Path to tun %llu=>%llu=>%llu seq=%"PRIu64" *>>\n", gnb_core->local_node->uuid64, dst_node->uuid64, dst_node->unified_forwarding_nodeid, dst_node->unified_forwarding_send_seq);
         //最多转发5个节点
         if ( c >= 5 ) {
@@ -174,7 +170,7 @@ int gnb_unified_forwarding_with_multi_path_tun(gnb_core_t *gnb_core, gnb_pf_ctx_
     return c;
 }
 
-int gnb_unified_forwarding_inet(gnb_core_t *gnb_core, gnb_payload16_t *payload) {
+int gnb_unified_forwarding_inet(gnb_core_t *gnb_core, gnb_payload16_t *payload, gnb_sockaddress_t *source) {
     gnb_unified_forwarding_frame_foot_t *unified_forwarding_frame_foot;
     gnb_uuid_t src_nodeid;
     gnb_node_t *src_node;
@@ -197,6 +193,7 @@ int gnb_unified_forwarding_inet(gnb_core_t *gnb_core, gnb_payload16_t *payload) 
         return UNIFIED_FORWARDING_ERROR;
     }
     dst_nodeid = gnb_ntohll(unified_forwarding_frame_foot->dst_nodeid);
+    if (!gnb_utc_receive(gnb_core, src_nodeid, source)) return UNIFIED_FORWARDING_DROP;
     dst_node   = GNB_HASH32_UINT64_GET_PTR(gnb_core->uuid_node_map, dst_nodeid);
     unified_forwarding_nodeid = gnb_ntohll(unified_forwarding_frame_foot->unified_forwarding_nodeid);
     if ( NULL == dst_node ) {
@@ -214,14 +211,16 @@ int gnb_unified_forwarding_inet(gnb_core_t *gnb_core, gnb_payload16_t *payload) 
         return UNIFIED_FORWARDING_TO_INET;
     }
     //payload to tun
-    src_node->unified_forwarding_nodeid      = unified_forwarding_nodeid;
-    src_node->unified_forwarding_node_ts_sec = gnb_core->now_time_sec;
+    if (gnb_utc_action(gnb_core, src_nodeid) == GNB_UTC_NATIVE) {
+        src_node->unified_forwarding_nodeid      = unified_forwarding_nodeid;
+        src_node->unified_forwarding_node_ts_sec = gnb_core->now_time_sec;
+    }
     gnb_payload16_set_size( payload, in_payload_size - sizeof(gnb_unified_forwarding_frame_foot_t) );
     GNB_LOG3(gnb_core->log, GNB_LOG_ID_PF, "*<< Unified Forwarding to tun %llu=>%llu=>%llu seq=%"PRIu64" *<<\n", src_nodeid, unified_forwarding_nodeid, dst_nodeid, unified_forwarding_seq);
     return UNIFIED_FORWARDING_TO_TUN;
 }
 
-int gnb_unified_forwarding_multi_path_inet(gnb_core_t *gnb_core, gnb_payload16_t *payload) {
+int gnb_unified_forwarding_multi_path_inet(gnb_core_t *gnb_core, gnb_payload16_t *payload, gnb_sockaddress_t *source) {
     gnb_unified_forwarding_frame_foot_t *unified_forwarding_frame_foot;
     gnb_uuid_t src_nodeid;
     gnb_node_t *src_node;
@@ -244,6 +243,7 @@ int gnb_unified_forwarding_multi_path_inet(gnb_core_t *gnb_core, gnb_payload16_t
         return UNIFIED_FORWARDING_ERROR;
     }
     dst_nodeid = gnb_ntohll(unified_forwarding_frame_foot->dst_nodeid);
+    if (!gnb_utc_receive(gnb_core, src_nodeid, source)) return UNIFIED_FORWARDING_DROP;
     dst_node   = GNB_HASH32_UINT64_GET_PTR(gnb_core->uuid_node_map, dst_nodeid);
     unified_forwarding_nodeid = gnb_ntohll(unified_forwarding_frame_foot->unified_forwarding_nodeid);
     if ( NULL == dst_node ) {
@@ -300,8 +300,10 @@ int gnb_unified_forwarding_multi_path_inet(gnb_core_t *gnb_core, gnb_payload16_t
     }
     dst_node->unified_forwarding_recv_seq_array[min_seq_idx] = unified_forwarding_seq;
     //payload to tun
-    src_node->unified_forwarding_nodeid      = unified_forwarding_nodeid;
-    src_node->unified_forwarding_node_ts_sec = gnb_core->now_time_sec;
+    if (gnb_utc_action(gnb_core, src_nodeid) == GNB_UTC_NATIVE) {
+        src_node->unified_forwarding_nodeid      = unified_forwarding_nodeid;
+        src_node->unified_forwarding_node_ts_sec = gnb_core->now_time_sec;
+    }
     gnb_payload16_set_size( payload, in_payload_size - sizeof(gnb_unified_forwarding_frame_foot_t) );
     return UNIFIED_FORWARDING_TO_TUN;
 }

@@ -22,6 +22,7 @@
 #include <unistd.h>
 
 #include "gnb.h"
+#include "gnb_utc_runtime.h"
 
 #ifdef __UNIX_LIKE_OS__
 #include <netinet/in.h>
@@ -103,6 +104,7 @@ gnb_worker_t * select_pf_worker(gnb_core_t *gnb_core){
 }
 
 void gnb_send_ur0_frame(gnb_core_t *gnb_core, gnb_node_t *dst_node, gnb_payload16_t *payload) {
+    if (gnb_utc_action(gnb_core, dst_node->uuid64) != GNB_UTC_NATIVE) return;
     unsigned char buffer[gnb_core->conf->payload_block_size];
     gnb_payload16_t *fwd_payload = (gnb_payload16_t *)buffer;
     gnb_address_t *dst_address = gnb_select_available_address4(gnb_core, dst_node);
@@ -260,6 +262,8 @@ static void handle_ur1_frame(gnb_core_t *gnb_core, gnb_payload16_t *payload, gnb
         }
     }
     src_uuid64 = gnb_ntohll(ur1_frame_head->src_uuid64);
+    if (gnb_utc_action(gnb_core, src_uuid64) != GNB_UTC_NATIVE ||
+        gnb_utc_action(gnb_core, dst_uuid64) != GNB_UTC_NATIVE) return;
     src_node = (gnb_node_t *)GNB_HASH32_UINT64_GET_PTR(gnb_core->uuid_node_map, src_uuid64);
     if ( NULL==src_node ) {
         GNB_LOG3(gnb_core->log, GNB_LOG_ID_MAIN_WORKER, "UR1 frame frome %s payload src_node=%llu not found!\n",
@@ -438,7 +442,8 @@ skip_tun:
             break;
     }
 
-    if ( n_recv <= 0 ) {
+    if ( n_recv < GNB_PAYLOAD16_HEAD_SIZE ||
+         !gnb_utc_frame_valid(inet_payload, (size_t)n_recv) ) {
         goto finish;
     }
     if ( 1 == gnb_core->conf->if_dump ) {
@@ -717,6 +722,7 @@ static void* tun_udp_loop_thread_func(void *data) {
     GNB_LOG1(gnb_core->log, GNB_LOG_ID_MAIN_WORKER, "start %s success!\n", gnb_worker->name);
 
     do {
+        if (gnb_core->utc_service) gnb_utc_service_poll(gnb_core->utc_service);
         readfds = allset;
         timeout.tv_sec  = 1l;
         timeout.tv_usec = 10000l;

@@ -8,7 +8,7 @@ static int endpoint_equal(const gnb_utc_endpoint_t *a, const gnb_utc_endpoint_t 
 static int policy_equal(const gnb_utc_policy_t *a, const gnb_utc_policy_t *b) {
     return a->peer_id == b->peer_id && a->pair_id == b->pair_id &&
         a->pair_gen == b->pair_gen && a->mode == b->mode &&
-        a->expires_at == b->expires_at && a->deadline_tick == b->deadline_tick &&
+        a->expires_at == b->expires_at &&
         !memcmp(a->digest, b->digest, GNB_UTC_DIGEST_SIZE) &&
         endpoint_equal(&a->endpoint, &b->endpoint);
 }
@@ -108,7 +108,8 @@ int gnb_utc_apply(gnb_utc_table_t *t, uint64_t gen,
         } else if (p[i].pair_gen > t->entries[j].policy.pair_gen) {
             t->entries[j].blocked = 0;
         }
-        t->entries[j].policy = p[i];
+        if (t->entries[j].policy.pair_gen != p[i].pair_gen ||
+            !t->entries[j].policy.peer_id) t->entries[j].policy = p[i];
     }
     t->snapshot_count = count;
     for (i = 0; i < count; ++i) t->snapshot_peers[i] = p[i].peer_id;

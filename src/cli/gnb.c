@@ -332,7 +332,11 @@ void show_description() {
     }
     printf("\n");
     printf("%s\n", GNB_BUILD_STRING);
+#ifdef __UNIX_LIKE_OS__
+    printf("Features: proxy utc-conf utc-conf-v1\n");
+#else
     printf("Features: proxy\n");
+#endif
 }
 
 static void exec_loop_script(gnb_core_t *gnb_core, const char *script_file_name) {
@@ -475,6 +479,13 @@ primary_process_loop:
     // here begin hot restart gnb
 	//为了适配 Windows 平台共享内存的特性,创建新的共享内存块前必须把旧的 gnb core 停下来,重新映射共享内存块.
 	gnb_core_stop(gnb_core);
+    /* All workers are stopped. Release the instance writer before constructing
+     * the replacement core; its startup recovers constraints with a fresh boot. */
+    if (gnb_core->utc_service && gnb_core->utc_service->managed) gnb_utc_managed_required = 1;
+    gnb_utc_service_close(gnb_core->utc_service);
+    gnb_core->utc_service = NULL;
+    gnb_core->utc_policy = NULL;
+
 	
 	//注意,至此进程只有当前这个线程在工作
 	// munmap 之后 gnb_core->conf 就无法使用了, 因此要把 gnb_core->conf.map_file 拷贝出来

@@ -377,6 +377,32 @@ gnb_core_t* gnb_core_create(gnb_conf_t *conf) {
     gnb_heap_t *heap = gnb_heap_create(conf->max_heap_fragment);
     gnb_core = gnb_heap_alloc(heap, sizeof(gnb_core_t));
     memset(gnb_core, 0, sizeof(gnb_core_t));
+    if (gnb_utc_managed_required && (!conf->conf_dir[0] || conf->lite_mode)) {
+        fprintf(stderr, "UTC RECOVERY_REQUIRED: managed instance needs its configuration\n");
+        gnb_heap_free(heap, gnb_core); gnb_heap_release(heap); return NULL;
+    }
+
+#ifndef _WIN32
+    if (conf->conf_dir[0]) {
+        gnb_core->utc_service = gnb_utc_service_open(conf->conf_dir, conf->local_uuid, conf->udp_socket_type |
+            ((conf->universal_relay0 || conf->universal_relay1) ? GNB_UTC_UR_SERVER : 0) |
+            (gnb_utc_managed_required ? GNB_UTC_REQUIRED : 0));
+        if (!gnb_core->utc_service) {
+            fprintf(stderr, "UTC RECOVERY_REQUIRED: refusing unsafe instance startup\n");
+            gnb_heap_free(heap, gnb_core);
+            gnb_heap_release(heap);
+            return NULL;
+        }
+        gnb_core->utc_policy = &gnb_core->utc_service->table;
+    }
+#else
+    if (gnb_utc_managed_required || (conf->conf_dir[0] && gnb_utc_service_has_state(conf->conf_dir) != 0)) {
+        fprintf(stderr, "UTC UNSUPPORTED: managed state requires a capable driver\n");
+        gnb_heap_free(heap, gnb_core);
+        gnb_heap_release(heap);
+        return NULL;
+    }
+#endif
     gnb_core->heap = heap;
     gnb_core->heap_lru32 = gnb_heap_create(conf->index_service_lru_size + 128);
     ctl_block_create(gnb_core, conf);
@@ -386,6 +412,8 @@ gnb_core_t* gnb_core_create(gnb_conf_t *conf) {
     gnb_log_ctx_init(gnb_core->log);
     /* 日志就绪后再载 proxy.conf，避免加载成功/失败日志被丢掉 */
     gnb_proxy_cfg_load(gnb_core, gnb_core->conf->conf_dir);
+
+
     gnb_core->ed25519_private_key = gnb_core->ctl_block->core_zone->ed25519_private_key;
     gnb_core->ed25519_public_key  = gnb_core->ctl_block->core_zone->ed25519_public_key;
     gnb_core->index_address_ring.address_list = (gnb_address_list_t *)gnb_core->ctl_block->core_zone->index_address_block;
@@ -580,6 +608,7 @@ finish:
 }
 
 gnb_core_t* gnb_core_index_service_create(gnb_conf_t *conf) {
+    if (gnb_utc_managed_required) return NULL;
     gnb_core_t *gnb_core;
     gnb_heap_t *heap = gnb_heap_create(conf->max_heap_fragment);
     gnb_core = gnb_heap_alloc(heap, sizeof(gnb_core_t));
@@ -705,6 +734,7 @@ PUBLIC_INDEX_RELEASE:
 	gnb_log_udp_close(gnb_core->log);
 	gnb_log_close(gnb_core->log);
 
+    gnb_utc_service_close(gnb_core->utc_service);
     ctl_block_release(gnb_core);
     gnb_heap_free(gnb_core->heap, gnb_core);
     gnb_heap_release(heap);

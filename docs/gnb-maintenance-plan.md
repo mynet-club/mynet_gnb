@@ -1,6 +1,6 @@
 # mynet_gnb 维护与发行执行计划
 
-本文档是 `mynet_gnb` 当前版本管理、补丁维护和发行工作的执行入口。执行 agent 应先阅读本文，再按“未完成任务”顺序推进。
+本文档保留历史维护/发行记录。当前 GNB 采用自有版本维护，按需合并作者主线，不再按补丁包组织开发；UTC 当前契约与测试入口见文末“UTC MVP GNB 实现与验收”。历史发行 pin 不因源码开发自动改写。
 
 ## 一、设计目标
 
@@ -371,3 +371,90 @@ rg -n 'p1-hot-restart|p1-hot-restart-v2|p2-route-proxy|p3-log-hot-config' \
 ```
 
 确认没有默认 workflow、脚本或文档引用后，再把旧包移动到历史归档目录；不要直接删除仍被 `sources/history.ndjson` 或发布记录引用的目录。
+
+## UTC MVP GNB 实现与验收（2026-11-04）
+
+原始源码基线：`eed65f8675f9e50817c7f55089c98bffe91c90c6`。本批直接开发基线：main 的 `04e6b105b47c25760e5ab44490e38bed70f00da7`。GNB 采用自有版本源码维护，按需合并作者主线；本文前面的补丁包制作流程为历史记录，不指导当前 UTC 开发。源码提交与版本以本仓 `git log` 为准。
+
+### 范围与模块
+
+本批实现 GNB 侧的 per-peer 本地路径策略、收发约束、配置热载、持久恢复和加载状态；不实现 UTC TCP/TLS 服务、租约签发或双端协调器，不声称整个 UTC A-S/A-D 公网交付完成。
+
+| 模块 | 职责 |
+|---|---|
+| `src/gnb_utc.c/h` | 每实例策略表、config/pair 版本、三态路由、到期锁存、来源检查；上限 128 个历史 peer，含 direct tombstone，不自动清历史 |
+| `src/gnb_utc_runtime.c/h` | 原生 socket 接口桥接、按 export 地址族发送、错误不回退、来源匹配、控制帧最小长度和诊断计数 |
+| `src/gnb_utc_service.c/h` | 私有文件解析、实例/scope 固定、持久状态、周期更新、boot/PID 和 status；POSIX 实现 |
+| route/node/index/primary workers | 最终目标在原生回退前接管；保留原 VPN 加密链；抑制定向 DETECT；保留 Index 注册/查询；来源 guard 及代理来源学习隔离 |
+
+`gnb_node_t` 和 ctl/map 布局未改；`gnb_ctl` 仍可读取并触发原生热重启。核心结构中的可选 UTC manager 是进程私有状态，不进入 map。旧状态无配置时保持原生路由。POSIX 构建公布 `Features: proxy utc-conf utc-conf-v1`；Windows 不公布 UTC 能力，新增通用源码仅做交叉编译兼容检查，不将 POSIX 恢复结果外推到 Windows。
+
+### 冻结的本地执行格式 v1
+
+`conf_dir/utc.conf` 必须为 daemon 当前用户所有、0600、普通文件、非符号链接。执行器先完成业务授权，再原子替换本地投影。GNB 不接管平台授权或签租约。文本固定为：
+
+```text
+utc-v1 <scope-token> <instance-token> <local-uuid> <config-gen>
+peer <peer-uuid> <pair-id> <pair-gen> <mode> <expires-at> <family> <address-32hex> <port> <ipv6-scope-id> <manifest-digest-64hex>
+```
+
+- token 长 1–63，限字母数字和 `_-.`；ID/代号为非零 uint64 十进制，不允许回绕；摘要/地址为小写 hex。未知键、超长/溢出、重复 peer/pair、错误 scope/节点与版本冲突拒绝整次更新。
+- mode 1 为 UTC，family 为 4/6；IPv4 在前四字节、后十二字节为零；端口/有效期非零。mode 0 为显式 direct，expiry/family/address/port/scope 必须全零，也必须推进 pair_gen/config_gen。
+- export = family/address/port/scope 的 UDP 下一跳，可以是本地 Client，也可以是远端 Edge。不可用地址族在配置阶段拒绝，send 错误不落回原生候选。
+- config_gen 管整份文件，pair_gen 管单 peer；未改 pair 不刷新单调截止、不解除已锁存阻断。省略受管 peer 或删配置不解除管理；只有显式新代 direct 才释放。
+- UR0/UR1 **服务端**可能向任意地址转发，无法完整识别最终 peer。MVP 拒绝它们与未释放 UTC 约束共存（包括重启恢复），而不是悄悄放行或全局关闭其他 peer 的 UR。无 UTC 约束时原 UR 行为保留；自动选路、多跳规划、动态出口验证归外部后续工作。
+
+更新错误由同一枚举/状态口径报告：CONFIG_INVALID、VERSION_REWIND、GENERATION_CONFLICT、CAPACITY_EXCEEDED、UNSUPPORTED、SCOPE_MISMATCH；I/O/恢复失败另报 STORAGE_FAILED、RECOVERY_REQUIRED 等。config/policy/status 不含 VPN 私钥、业务 payload、订单或价格。
+
+### 恢复与状态
+
+`utc.managed` 是永久保留的完整预备状态，不只是布尔标记；`utc.state.0/1/2` 是另外三份完整副本。规范文本包含所有受管/已释放记录和水位，以 SHA-512 检查完整性；它不替代受信文件权限或业务授权。
+
+先逐份临时文件写全/fsync/rename/目录 fsync，四份都成功后才发布内存策略。初次启用在 managed 记录写入后中断，也能恢复已知受管集合；没有被激活的预备状态不能凭磁盘记录转发 export。部分持久化失败时冻结更新、阻断本次涉及的已有 export；未变更 pair 保持原约束并独立到期，等待可信恢复；不倒退版本补偿。
+
+重启在有效副本中选最高代，export 全部先 BLOCKED；需要外部重新授权并发布新代才能恢复，direct tombstone 保留。运行时损坏/缺文件不会清空内存约束；单副本损坏由其他副本恢复，非受管 peer 保持原生行为。所有可信副本都丢失/损坏则拒绝该实例启动，属于显式灾难恢复失败，不能记作“其他 peer 未受影响”。
+
+启动器须在目录外持久保存 `utc_managed` 历史标记，已受管实例冷启动时传入 `--utc-managed`。无可信状态时拒绝启动，包括全部状态被删除。首次启用可在原生实例运行中加载配置；热重启自动继承受管断言。Windows 检测到 UTC 状态或该参数时拒绝启动。agent/A2 尚须完成目录外元数据和参数接线。
+
+`utc.status` 每秒原子刷新，格式为：
+
+```text
+status-v1 <scope> <instance> <local-uuid> <boot-id-32hex> <config-gen> <generated-at> <last-operation-reason> <pid>
+metrics <kernel-accepted-tx-packets> <policy-blocked-tx> <send-errors> <rejected-rx>
+policy <与配置 peer 行相同的字段>
+peer <peer-uuid> <pair-id> <pair-gen> <APPLIED|BLOCKED> <reason> <manifest-digest-64hex> <local-digest-128hex>
+```
+
+local-digest 是对应规范 `policy ...\n` 行（含换行）的 SHA-512，用于核对本端投影；共同 manifest digest 与本端摘要分开。计数器为当前 boot 的诊断，不是额度或交付计量，kernel accepted 不等于远端收到。执行器须核对 scope/instance/PID/当前 boot/代号/摘要与新鲜度；APPLIED 仅为已持久并加载的事实，GNB 不写 VERIFIED/EFFECTIVE。
+
+热更新与到期检查在 primary UDP 周期执行，不依赖 TUN 流量。墙钟到期和单调截止均阻断，回拨不能解除已锁存过期。原生 core.flag=2 热重启在 workers 停止后移交 writer，恢复新 boot 与阻断状态，不遗留旧锁或复用旧成功状态。
+
+### 可复现验证与边界
+
+```sh
+make -f Makefile.Darwin -j4                  # macOS
+make -f Makefile.linux -j4                   # Linux
+make -C tests check
+make -f Makefile.guard check
+make -C tests check CFLAGS='-O1 -g -Wall -Wextra -Werror -std=c99 -D_POSIX_C_SOURCE=200809L -fsanitize=address,undefined -fno-omit-frame-pointer'
+# 以下只在隔离 Linux/root 环境运行，使用新 namespace/新密钥，不接触生产：
+sudo python3 tests/test_utc_topology.py --binary-dir "$PWD"
+sudo python3 tests/test_utc_topology.py --binary-dir "$PWD" --dual --safe-index
+```
+
+测试会清理其进程、network namespaces、私钥与 map，保留脱敏日志/UDP 元数据及结果摘要。`test_utc_topology.py` 的 TCP bridge 只是驱动夹具，不是 utcd 或 mTLS/租约实现，不冒充生产 UTC 服务。CI `utc-main-tests` 直接测 main 源码，独立于历史发行通道 pin；没有修改发行 pin、发 tag、上传包或部署。
+
+| 要求 | 代码与证据 |
+|---|---|
+| D1/D3 收发严格约束 | socket 测试 + 真实加密 GNB 数据报从错误来源重放，拒绝计数增加且 TUN RX 不增加 |
+| D2/D9 布局与默认兼容 | node/map 头无差异；真实第三 peer、Index 和原生 gnb_ctl 热重启；未配置 UTC 的第三节点正常 |
+| D4/D6 候选与回退 | 定向 DETECT 抑制、最终目标 route 回调覆盖、尾部再检查；真实有 native 候选时选中 pair 无原生 UDP；TCP 中断不回退 |
+| D5 UR/Index/LAN 边界 | Index 普通/secure 注册、查询与响应被捕获；UR 组合显式拒绝；LAN 广播无目标排除，定向 LAN_PING 仍受来源 guard |
+| D7/D8/D14 配置、热载、状态 | 配置/版本/作用域/坏文件/缺文件测试；空闲到期、boot/PID 与原生热重启；UTC 格式严格版本化 |
+| D11 失效与恢复 | 初次/后续更新 × 错误/进程退出 × 24 I/O 边界 × 单副本损坏，共 288 个故障用例；删除、过期、重启不复活 |
+| D13 单侧/双侧出口 | 真实 GNB A-S 与 A-D 驱动拓扑，各自验证双向 TUN、稳定端口与 TCP 重连；IPv4/IPv6 socket 收发单测 |
+| D10/D12 双端协调边界 | GNB 提供 pair_gen/摘要/boot/APPLIED；prepare/verify/confirm/补偿是 agent/A2 的后续集成，不由驱动伪造全局成功 |
+
+验收范围：本地 macOS 与隔离 Linux 的源码构建、单元/故障注入/真实 GNB 驱动拓扑；不是公网加速证明，不含 UTC 商业授权、mTLS、计量或整条 A-S/A-D 发布验收。完整 UTC 后续仍需用真实 utcd/agent 替换夹具，并核验公网环境与租约/协调联动。
+
+2026-11-04 最终源码验证：A-S 与 A-D/secure Index 各 18 项驱动拓扑断言通过，第三 peer 使用原始 `eed65f8` 二进制；两套构建的 src C/头文件逐字节相同。ASan/UBSan 与 288 个故障注入用例通过。OpenWrt 构建入口已补入 UTC 对象及头依赖，Linux 上相关源码编译通过；完整链接受隔离环境缺少 libz 开发库阻断，未宣称 OpenWrt SDK/设备验收通过。进程退出注入不替代物理断电测试。

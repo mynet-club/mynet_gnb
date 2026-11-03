@@ -1,7 +1,8 @@
 name: Verify GNB Tooling And Channel Tests
 
 # D 段验证：发行侧的一切结论只在这条云端流水线里成立，不引用任何本地/SSH/实机跑过的记录。
-# 这里只验两件事：
+# 历史发行通道的两项检查保留，另由 utc-main-tests 验证自有主线源码与隔离 GNB 拓扑。
+# 发行通道检查包括：
 #   1) 工具脚本与补丁包索引自身没问题（scripts/check.sh lint）；
 #   2) 每个「已固定发行源码提交」的通道，proxy 单元测试在**它自己导出的源码树**里通过。
 # 第 2 点是关键：测的不是工作区当前 src/，而是发行真正要编译的那份提交。
@@ -147,3 +148,44 @@ jobs:
             echo "没有任何通道被真正测到（全部跳过）—— 跳过不是通过。" >&2
             exit 1
           fi
+
+  utc-main-tests:
+    # The owned main source is tested directly, independently of release pins.
+    # This job does not publish packages or claim a public-network A-S gate.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install isolated driver test dependencies
+        timeout-minutes: 5
+        run: |
+          sudo apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 -o Acquire::http::Timeout=20 update -qq
+          sudo apt-get -o DPkg::Lock::Timeout=120 install -y build-essential iproute2 iputils-ping python3
+      - name: Build owned main and run policy, socket and crash tests
+        run: |
+          make -f Makefile.linux -j2
+          make -C tests check
+      - name: Build unchanged eed65f8 reference for third peer
+        run: |
+          mkdir -p "${{ runner.temp }}/gnb-native-reference"
+          git archive eed65f8675f9e50817c7f55089c98bffe91c90c6 src libs Makefile.inc Makefile.linux | tar -xf - -C "${{ runner.temp }}/gnb-native-reference"
+          make -C "${{ runner.temp }}/gnb-native-reference" -f Makefile.linux -j2
+      - name: Real GNB A-S driver fixture
+        timeout-minutes: 4
+        run: |
+          set -o pipefail
+          sudo python3 tests/test_utc_topology.py --binary-dir "$PWD" --reference-binary-dir "${{ runner.temp }}/gnb-native-reference" | tee utc-as-result.log
+      - name: Real GNB A-D driver fixture with secure Index
+        timeout-minutes: 4
+        run: |
+          set -o pipefail
+          sudo python3 tests/test_utc_topology.py --binary-dir "$PWD" --dual --safe-index --reference-binary-dir "${{ runner.temp }}/gnb-native-reference" | tee utc-ad-result.log
+      - name: Preserve result summaries only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: utc-driver-results
+          path: utc-*-result.log
+          if-no-files-found: ignore
