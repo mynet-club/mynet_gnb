@@ -462,3 +462,5 @@ sudo python3 tests/test_utc_topology.py --binary-dir "$PWD" --dual --safe-index
 2026-11-04 A2 接线批：按用户要求，将原 gnb_utc_runtime.c/h 的收发与帧检查实现合入 gnb_utc.c/h，worker 保留调用；gnb_utc_service.c/h 保留文件解析、持久 I/O 和单写者管理，避免把磁盘机制塞入 packet 路径。配置/策略/收发故障测试及 Darwin 构建通过；本批完整集成回归仍在推进。
 
 A2 接线续批：启动/关闭、热重启受管断言和 UR/平台能力判断也已收拢至 gnb_utc.c/h；core/CLI 仅调用 attach/detach/require_managed。原始基线 eed65f8，本批父提交 d5d3908。单元/288 个故障用例、Darwin/Linux 构建通过；隔离 Linux 全量 A-S/A-D 各 18 项再次通过（8s4103ux / hbq70z08），真实 agent CLI+utcd 的 A-S smoke 7 项通过（7_t2q5ml）。这些驱动/实验通路证据不代表双端协调、签名租约或 mTLS 已完成。
+
+真实 utcd 重连回归（2026-11-04）：--utcd/--agent 的实验拓扑增至 9 项，包括保持 Client 进程、固定出口恢复双向 TUN、恢复期间无原生 A-B UDP。最新隔离 Linux 证据 `/tmp/gnb-utc-topology-ydvnm0qi`。该夹具仍明确标为 token-lab，不计作完整 A2/公网认证验收；GNB 生产源码本批未变。

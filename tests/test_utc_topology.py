@@ -297,6 +297,20 @@ def main(binary_dir, dual=False, safe_index=False, reference_binary_dir=None, ut
             ping(1, 2, False)
             ping(1, 3)
             outcomes["real_utcd_failure_blocks_pair_preserves_native_peer"] = "PASS"
+            assert client.poll() is None
+            client_pid = client.pid
+            restart_at = time.time()
+            edge = spawn("4", [utcd, "-c", root / "relay.ini"], "utcd-edge-restarted.log")
+            wait_for(lambda: ns("1", "ping", "-c", "1", "-W", "1", "10.42.0.2", check=False).returncode == 0, timeout=15)
+            assert client.poll() is None and client.pid == client_pid
+            ping(1, 2)
+            ping(2, 1)
+            outcomes["real_utcd_automatic_reconnect_fixed_export_ports"] = "PASS"
+            packets = [json.loads(x) for x in (root / "udp.jsonl").read_text().splitlines()]
+            interval = [p for p in packets if p[0] >= restart_at]
+            assert not any(p[1] == "10.250.0.1" and p[3] == "10.250.0.2" for p in interval)
+            assert not any(p[1] == "10.250.0.2" and p[3] == "10.250.0.1" for p in interval)
+            outcomes["real_utcd_recovery_has_no_native_pair_bypass"] = "PASS"
             print(json.dumps({"topology": "A-S real utcd token-lab smoke (not A2/mTLS acceptance)", "evidence": str(root), "checks": outcomes}, indent=2), flush=True)
             return
         # Replay one genuinely encrypted GNB datagram from an unauthorized UDP
