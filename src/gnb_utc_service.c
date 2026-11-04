@@ -23,7 +23,6 @@
 #include <sys/file.h>
 #endif
 
-int gnb_utc_managed_required;
 
 int gnb_utc_service_has_state(const char *directory) {
     const char *names[] = {"utc.conf", "utc.managed", "utc.state.0", "utc.state.1", "utc.state.2"};

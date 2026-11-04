@@ -377,32 +377,9 @@ gnb_core_t* gnb_core_create(gnb_conf_t *conf) {
     gnb_heap_t *heap = gnb_heap_create(conf->max_heap_fragment);
     gnb_core = gnb_heap_alloc(heap, sizeof(gnb_core_t));
     memset(gnb_core, 0, sizeof(gnb_core_t));
-    if (gnb_utc_managed_required && (!conf->conf_dir[0] || conf->lite_mode)) {
-        fprintf(stderr, "UTC RECOVERY_REQUIRED: managed instance needs its configuration\n");
+    if (gnb_utc_attach(gnb_core, conf)) {
         gnb_heap_free(heap, gnb_core); gnb_heap_release(heap); return NULL;
     }
-
-#ifndef _WIN32
-    if (conf->conf_dir[0]) {
-        gnb_core->utc_service = gnb_utc_service_open(conf->conf_dir, conf->local_uuid, conf->udp_socket_type |
-            ((conf->universal_relay0 || conf->universal_relay1) ? GNB_UTC_UR_SERVER : 0) |
-            (gnb_utc_managed_required ? GNB_UTC_REQUIRED : 0));
-        if (!gnb_core->utc_service) {
-            fprintf(stderr, "UTC RECOVERY_REQUIRED: refusing unsafe instance startup\n");
-            gnb_heap_free(heap, gnb_core);
-            gnb_heap_release(heap);
-            return NULL;
-        }
-        gnb_core->utc_policy = &gnb_core->utc_service->table;
-    }
-#else
-    if (gnb_utc_managed_required || (conf->conf_dir[0] && gnb_utc_service_has_state(conf->conf_dir) != 0)) {
-        fprintf(stderr, "UTC UNSUPPORTED: managed state requires a capable driver\n");
-        gnb_heap_free(heap, gnb_core);
-        gnb_heap_release(heap);
-        return NULL;
-    }
-#endif
     gnb_core->heap = heap;
     gnb_core->heap_lru32 = gnb_heap_create(conf->index_service_lru_size + 128);
     ctl_block_create(gnb_core, conf);
@@ -608,7 +585,7 @@ finish:
 }
 
 gnb_core_t* gnb_core_index_service_create(gnb_conf_t *conf) {
-    if (gnb_utc_managed_required) return NULL;
+    if (!gnb_utc_index_allowed()) return NULL;
     gnb_core_t *gnb_core;
     gnb_heap_t *heap = gnb_heap_create(conf->max_heap_fragment);
     gnb_core = gnb_heap_alloc(heap, sizeof(gnb_core_t));
@@ -734,7 +711,7 @@ PUBLIC_INDEX_RELEASE:
 	gnb_log_udp_close(gnb_core->log);
 	gnb_log_close(gnb_core->log);
 
-    gnb_utc_service_close(gnb_core->utc_service);
+    gnb_utc_detach(gnb_core, 0);
     ctl_block_release(gnb_core);
     gnb_heap_free(gnb_core->heap, gnb_core);
     gnb_heap_release(heap);

@@ -18,7 +18,7 @@
 #include <stdlib.h>
 
 #include "gnb.h"
-#include "gnb_utc_runtime.h"
+#include "gnb_utc.h"
 #include "gnb_node.h"
 #include "gnb_hash32.h"
 #include "gnb_pf.h"

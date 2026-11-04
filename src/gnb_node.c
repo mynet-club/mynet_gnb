@@ -40,7 +40,7 @@
 #include "ed25519/sha512.h"
 #include "gnb_unified_forwarding.h"
 #include "gnb_binary.h"
-#include "gnb_utc_runtime.h"
+#include "gnb_utc.h"
 
 gnb_node_t * gnb_node_init(gnb_core_t *gnb_core, gnb_uuid_t uuid64) {
     gnb_node_t *node = &gnb_core->ctl_block->node_zone->node[gnb_core->node_nums];

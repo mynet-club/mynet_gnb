@@ -62,4 +62,19 @@ gnb_utc_action_t gnb_utc_route(gnb_utc_table_t *table, uint64_t peer_id,
 /* Source filtering supplements, never replaces, native GNB authentication. */
 int gnb_utc_accept(gnb_utc_table_t *table, uint64_t peer_id,
                    const gnb_utc_endpoint_t *source, uint64_t now, uint64_t tick);
+/* Integration entry points: callers provide the final peer and opaque bytes.
+ * Only NATIVE permits the caller to continue its existing route selection. */
+struct _gnb_core_t;
+struct _gnb_conf_t;
+/* Main thread only, before workers start/after they stop. Disk I/O is delegated
+ * to the private service helper; lifecycle decisions stay in this module. */
+void gnb_utc_require_managed(void);
+int gnb_utc_index_allowed(void);
+int gnb_utc_attach(struct _gnb_core_t *core, struct _gnb_conf_t *conf);
+void gnb_utc_detach(struct _gnb_core_t *core, int remember_history);
+struct _gnb_sockaddress_t;
+int gnb_utc_send(struct _gnb_core_t *core, uint64_t peer, const void *bytes, size_t size);
+gnb_utc_action_t gnb_utc_action(struct _gnb_core_t *core, uint64_t peer);
+int gnb_utc_frame_valid(const void *bytes, size_t size);
+int gnb_utc_receive(struct _gnb_core_t *core, uint64_t peer, const struct _gnb_sockaddress_t *source);
 #endif

@@ -357,7 +357,7 @@ gnb_conf_t* gnb_argv(int argc,char *argv[]) {
         }
         switch (opt) {
         case SET_UTC_MANAGED:
-            gnb_utc_managed_required = 1;
+            gnb_utc_require_managed();
             break;
         case 'c':
             snprintf(conf->conf_dir, PATH_MAX, "%s", optarg);

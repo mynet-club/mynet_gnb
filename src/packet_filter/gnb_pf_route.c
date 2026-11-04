@@ -16,7 +16,7 @@
 */
 
 #include "gnb.h"
-#include "gnb_utc_runtime.h"
+#include "gnb_utc.h"
 #include "gnb_pf.h"
 #include "gnb_node.h"
 #include "gnb_payload16.h"

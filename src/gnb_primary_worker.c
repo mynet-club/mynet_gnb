@@ -22,7 +22,7 @@
 #include <unistd.h>
 
 #include "gnb.h"
-#include "gnb_utc_runtime.h"
+#include "gnb_utc.h"
 
 #ifdef __UNIX_LIKE_OS__
 #include <netinet/in.h>

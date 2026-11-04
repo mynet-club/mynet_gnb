@@ -383,7 +383,7 @@ rg -n 'p1-hot-restart|p1-hot-restart-v2|p2-route-proxy|p3-log-hot-config' \
 | 模块 | 职责 |
 |---|---|
 | `src/gnb_utc.c/h` | 每实例策略表、config/pair 版本、三态路由、到期锁存、来源检查；上限 128 个历史 peer，含 direct tombstone，不自动清历史 |
-| `src/gnb_utc_runtime.c/h` | 原生 socket 接口桥接、按 export 地址族发送、错误不回退、来源匹配、控制帧最小长度和诊断计数 |
+| `src/gnb_utc.c/h` 集成入口 | 原生 socket 桥接、按 export 地址族发送、错误不回退、来源匹配、帧长度和诊断计数；原 runtime 文件已合入核心模块 |
 | `src/gnb_utc_service.c/h` | 私有文件解析、实例/scope 固定、持久状态、周期更新、boot/PID 和 status；POSIX 实现 |
 | route/node/index/primary workers | 最终目标在原生回退前接管；保留原 VPN 加密链；抑制定向 DETECT；保留 Index 注册/查询；来源 guard 及代理来源学习隔离 |
 
@@ -458,3 +458,7 @@ sudo python3 tests/test_utc_topology.py --binary-dir "$PWD" --dual --safe-index
 验收范围：本地 macOS 与隔离 Linux 的源码构建、单元/故障注入/真实 GNB 驱动拓扑；不是公网加速证明，不含 UTC 商业授权、mTLS、计量或整条 A-S/A-D 发布验收。完整 UTC 后续仍需用真实 utcd/agent 替换夹具，并核验公网环境与租约/协调联动。
 
 2026-11-04 最终源码验证：A-S 与 A-D/secure Index 各 18 项驱动拓扑断言通过，第三 peer 使用原始 `eed65f8` 二进制；两套构建的 src C/头文件逐字节相同。ASan/UBSan 与 288 个故障注入用例通过。OpenWrt 构建入口已补入 UTC 对象及头依赖，Linux 上相关源码编译通过；完整链接受隔离环境缺少 libz 开发库阻断，未宣称 OpenWrt SDK/设备验收通过。进程退出注入不替代物理断电测试。
+
+2026-11-04 A2 接线批：按用户要求，将原 gnb_utc_runtime.c/h 的收发与帧检查实现合入 gnb_utc.c/h，worker 保留调用；gnb_utc_service.c/h 保留文件解析、持久 I/O 和单写者管理，避免把磁盘机制塞入 packet 路径。配置/策略/收发故障测试及 Darwin 构建通过；本批完整集成回归仍在推进。
+
+A2 接线续批：启动/关闭、热重启受管断言和 UR/平台能力判断也已收拢至 gnb_utc.c/h；core/CLI 仅调用 attach/detach/require_managed。原始基线 eed65f8，本批父提交 d5d3908。单元/288 个故障用例、Darwin/Linux 构建通过；隔离 Linux 全量 A-S/A-D 各 18 项再次通过（8s4103ux / hbq70z08），真实 agent CLI+utcd 的 A-S smoke 7 项通过（7_t2q5ml）。这些驱动/实验通路证据不代表双端协调、签名租约或 mTLS 已完成。

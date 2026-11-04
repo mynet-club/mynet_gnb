@@ -61,7 +61,6 @@ GNB_CORE_OBJS =                                  \
        ./src/gnb_conf.o                          \
        ./src/gnb_conf_file.o                     \
        ./src/gnb_utc_service.o              \
-       ./src/gnb_utc_runtime.o              \
        ./src/gnb_utc.o                      \
        ./src/gnb_proxy.o                    \
        ./src/gnb_config_lite.o                   \
@@ -140,4 +139,4 @@ GNB_ES_OBJS   += ./src/es/gnb_es_platform.o
 
 # core layout/header changes must not leave stale objects in incremental builds.
 GNB_UTC_HEADER_USERS := $(patsubst %.c,%.o,$(wildcard ./src/*.c ./src/*/*.c))
-$(GNB_UTC_HEADER_USERS): ./src/gnb.h ./src/gnb_utc.h ./src/gnb_utc_service.h ./src/gnb_utc_runtime.h ./src/gnb_unified_forwarding.h ./src/gnb_route_frame.h
+$(GNB_UTC_HEADER_USERS): ./src/gnb.h ./src/gnb_utc.h ./src/gnb_utc_service.h ./src/gnb_unified_forwarding.h ./src/gnb_route_frame.h

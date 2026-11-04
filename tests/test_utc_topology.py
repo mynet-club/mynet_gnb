@@ -122,7 +122,11 @@ def capture(output):
             f.write(json.dumps([time.time(), src, sp, dst, dp, type_sub]) + "\n")
 
 
-def main(binary_dir, dual=False, safe_index=False, reference_binary_dir=None):
+def main(binary_dir, dual=False, safe_index=False, reference_binary_dir=None, utcd=None, agent=None):
+    if agent and not utcd:
+        raise ValueError("agent smoke requires real utcd")
+    if utcd and dual:
+        raise ValueError("real utcd dual-side binding is not implemented")
     assert sys.platform.startswith("linux") and os.geteuid() == 0
     binary_dir = Path(binary_dir).resolve()
     reference_binary_dir = Path(reference_binary_dir).resolve() if reference_binary_dir else binary_dir
@@ -158,6 +162,16 @@ def main(binary_dir, dual=False, safe_index=False, reference_binary_dir=None):
         if not mode:
             address, port, ttl = "0" * 32, 0, 0
         expiry = int(time.time()) + ttl if mode else 0
+        if agent:
+            projection = {"scope": "lab", "instance": f"node{node}", "local_id": node, "config_gen": gen,
+                "peers": [{"peer_id": peer, "pair_id": 12, "pair_gen": gen, "mode": mode,
+                    "expires_at": expiry, "export": f"{socket.inet_ntoa(bytes.fromhex(address)[:4])}:{port}" if mode else "",
+                    "scope_id": 0, "manifest": "1"*64}]}
+            file = root / f"projection{node}.json"
+            file.write_text(json.dumps(projection))
+            result = ns(str(node), "env", "MYNET_HOME="+str(root / "agent-home"), agent, "utc", "publish", "-c", root / str(node), "--binary", binary_dir / "gnb", "--file", file)
+            assert json.loads(result.stdout)["state"] == "PUBLISHED"
+            return
         text = f"utc-v1 lab node{node} {node} {gen}\npeer {peer} 12 {gen} {mode} {expiry} {4 if mode else 0} {address} {port} 0 {'1'*64}\n"
         file = root / str(node) / "utc.conf"
         tmp = file.with_suffix(".new")
@@ -209,19 +223,46 @@ def main(binary_dir, dual=False, safe_index=False, reference_binary_dir=None):
         spawn("s", [sys.executable, this, "--capture", root / "udp.jsonl"], "capture.log")
         index_args = [binary_dir / "gnb", "-c", root / "9000"] if safe_index else [binary_dir / "gnb", "-P", "-l", "19000", "-4", "-b", root / "index.map", "--pid-file", root / "index.pid", "--console-log-level", "1"]
         spawn("5", index_args, "index.log")
-        edge_mode = "dual-edge" if dual else "edge"
-        edge = spawn("4", [sys.executable, this, "--bridge", edge_mode, str(root)], "edge.log")
-        wait_for(lambda: (root / "edge.listening").exists())
-        client = spawn("1", [sys.executable, this, "--bridge", "client", str(root)], "client.log")
-        if dual:
-            client_b = spawn("2", [sys.executable, this, "--bridge", "client-b", str(root)], "client-b.log")
-        wait_for(lambda: (root / "edge.ready").exists() and (root / "client.ready").exists() and (not dual or (root / "client-b.ready").exists()))
-        policy(1, 1)
-        policy(2, 1)
+        if utcd:
+            utcd = Path(utcd).resolve()
+            for role, address, udp_port, target in (
+                ("relay", "listen = 10.250.0.4:14600", 14000, "10.250.0.2:9002"),
+                ("client", "connect = 10.250.0.4:14600", 14001, "127.0.0.1:9001"),
+            ):
+                config = root / (role + ".ini")
+                config.write_text(f'[dataplane "lab-{role}"]\nprotocol = gnb\ntransport = tcp\nrole = {role}\n{address}\nudp_bind = {"10.250.0.4" if role == "relay" else "127.0.0.1"}\nudp_port = {udp_port}\nudp_target = {target}\nauth_token = 12345\nmax_sessions = 1\n[management]\ncontrol_socket = {root}/{role}.sock\n')
+                config.chmod(0o600)
+            edge = spawn("4", [utcd, "-c", root / "relay.ini"], "utcd-edge.log")
+            wait_for(lambda: (root / "relay.sock").exists())
+            client = spawn("1", [utcd, "-c", root / "client.ini"], "utcd-client.log")
+            wait_for(lambda: (root / "client.sock").exists())
+        else:
+            edge_mode = "dual-edge" if dual else "edge"
+            edge = spawn("4", [sys.executable, this, "--bridge", edge_mode, str(root)], "edge.log")
+            wait_for(lambda: (root / "edge.listening").exists())
+            client = spawn("1", [sys.executable, this, "--bridge", "client", str(root)], "client.log")
+            if dual:
+                client_b = spawn("2", [sys.executable, this, "--bridge", "client-b", str(root)], "client-b.log")
+            wait_for(lambda: (root / "edge.ready").exists() and (root / "client.ready").exists() and (not dual or (root / "client-b.ready").exists()))
+        if not agent:
+            policy(1, 1)
+            policy(2, 1)
         nodes = {}
         for n in range(1, 4):
             nodes[n] = spawn(str(n), [(reference_binary_dir if n == 3 else binary_dir) / "gnb", "-c", root / str(n)], f"gnb{n}.log")
+        if agent:
+            wait_for(lambda: all(ns(str(n), "ip", "link", "show", f"gnb{n}", check=False).returncode == 0 for n in (1, 2)))
+            policy(1, 1)
+            policy(2, 1)
         wait_for(lambda: applied(1, 1) and applied(2, 1))
+        if agent:
+            for node in (1, 2):
+                header = (root / str(node) / "utc.status").read_text().splitlines()[0].split()
+                assert int(header[8]) == nodes[node].pid
+                verified = ns(str(node), "env", "MYNET_HOME="+str(root / "agent-home"), agent, "utc", "verify", "-c", root / str(node), "--file", root / f"projection{node}.json", "--boot", header[4], "--pid", nodes[node].pid)
+                assert json.loads(verified.stdout)["state"] == "APPLIED"
+            outcomes["agent_publish_and_current_process_applied_verification"] = "PASS"
+
         wait_for(lambda: ns("1", "ip", "link", "show", "gnb1", check=False).returncode == 0)
         ping(1, 2)
         ping(2, 1)
@@ -248,6 +289,16 @@ def main(binary_dir, dual=False, safe_index=False, reference_binary_dir=None):
             assert any(p[1] == host and p[3] == "10.250.0.5" and p[5] in ("0801", "0803") for p in packets)
             assert any(p[1] == "10.250.0.5" and p[3] == host and p[5] in ("0802", "0804") for p in packets)
         outcomes["index_registration_query_response_preserved"] = "PASS"
+        if utcd:
+            assert edge.poll() is None and client.poll() is None
+            outcomes["real_utcd_processes_carry_gnb_datagrams"] = "PASS"
+            edge.terminate()
+            edge.wait(timeout=5)
+            ping(1, 2, False)
+            ping(1, 3)
+            outcomes["real_utcd_failure_blocks_pair_preserves_native_peer"] = "PASS"
+            print(json.dumps({"topology": "A-S real utcd token-lab smoke (not A2/mTLS acceptance)", "evidence": str(root), "checks": outcomes}, indent=2), flush=True)
+            return
         # Replay one genuinely encrypted GNB datagram from an unauthorized UDP
         # source. Assert the driver's reject counter and actual TUN RX, not ping
         # failure alone (which could also mean the sender never sent).
@@ -423,6 +474,8 @@ if __name__ == "__main__":
     parser.add_argument("--dual", action="store_true")
     parser.add_argument("--safe-index", action="store_true")
     parser.add_argument("--reference-binary-dir")
+    parser.add_argument("--agent", help="real mynet executor for local A2 publish/verify smoke")
+    parser.add_argument("--utcd", help="real utcd binary for A-S token-lab smoke only")
     parser.add_argument("--bridge", nargs=2)
     parser.add_argument("--capture")
     args = parser.parse_args()
@@ -432,4 +485,4 @@ if __name__ == "__main__":
         capture(args.capture)
     else:
         assert args.binary_dir
-        main(args.binary_dir, args.dual, args.safe_index, args.reference_binary_dir)
+        main(args.binary_dir, args.dual, args.safe_index, args.reference_binary_dir, args.utcd, args.agent)

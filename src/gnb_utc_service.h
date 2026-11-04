@@ -7,7 +7,6 @@
 #define GNB_UTC_PATH_MAX 4352
 #define GNB_UTC_UR_SERVER 0x100u /* incompatible opaque UR forwarding */
 #define GNB_UTC_REQUIRED 0x200u /* launcher knows this instance was managed */
-extern int gnb_utc_managed_required; /* process-start/main-thread assertion */
 /* The manager is single-writer; only its policy table is shared with workers. */
 typedef struct {
     gnb_utc_table_t table;

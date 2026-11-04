@@ -1,4 +1,5 @@
-#include "gnb_utc_runtime.h"
+#include "gnb.h"
+#include "gnb_utc.h"
 #include "gnb_index_frame_type.h"
 #include "gnb_pingpong_frame_type.h"
 #include "gnb_uf_node_frame_type.h"

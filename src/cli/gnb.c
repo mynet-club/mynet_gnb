@@ -481,10 +481,7 @@ primary_process_loop:
 	gnb_core_stop(gnb_core);
     /* All workers are stopped. Release the instance writer before constructing
      * the replacement core; its startup recovers constraints with a fresh boot. */
-    if (gnb_core->utc_service && gnb_core->utc_service->managed) gnb_utc_managed_required = 1;
-    gnb_utc_service_close(gnb_core->utc_service);
-    gnb_core->utc_service = NULL;
-    gnb_core->utc_policy = NULL;
+    gnb_utc_detach(gnb_core, 1);
 
 	
 	//注意,至此进程只有当前这个线程在工作

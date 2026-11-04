@@ -31,7 +31,7 @@
 #include <unistd.h>
 
 #include "gnb.h"
-#include "gnb_utc_runtime.h"
+#include "gnb_utc.h"
 #include "gnb_time.h"
 #include "gnb_keys.h"
 #include "gnb_node.h"
