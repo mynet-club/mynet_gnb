@@ -457,7 +457,7 @@ sudo python3 tests/test_utc_topology.py --binary-dir "$PWD" --dual --safe-index
 
 验收范围：本地 macOS 与隔离 Linux 的源码构建、单元/故障注入/真实 GNB 驱动拓扑；不是公网加速证明，不含 UTC 商业授权、mTLS、计量或整条 A-S/A-D 发布验收。完整 UTC 后续仍需用真实 utcd/agent 替换夹具，并核验公网环境与租约/协调联动。
 
-2026-11-04 最终源码验证：A-S 与 A-D/secure Index 各 18 项驱动拓扑断言通过，第三 peer 使用原始 `eed65f8` 二进制；两套构建的 src C/头文件逐字节相同。ASan/UBSan 与 288 个故障注入用例通过。OpenWrt 构建入口已补入 UTC 对象及头依赖，Linux 上相关源码编译通过；完整链接受隔离环境缺少 libz 开发库阻断，未宣称 OpenWrt SDK/设备验收通过。进程退出注入不替代物理断电测试。
+2026-11-04 最终源码验证：A-S 与 A-D/secure Index 各 18 项驱动拓扑断言通过，第三 peer 使用原始 `eed65f8` 二进制；两套构建的 src C/头文件逐字节相同。ASan/UBSan 与 288 个故障注入用例通过。OpenWrt 构建入口已补入 UTC 对象及头依赖，Linux 上相关源码编译通过；完整链接受隔离环境缺少 libz 开发库阻断，未宣称 OpenWrt SDK/设备验收通过。进程退出注入不替代物理断电测试。**2026-11-07 复验：用 OpenWrt 24.10 SDK（armsr-armv8、x86-64）+ 官方 `zlib-dev` 的 `libz.a` 完成 GNB 链接（动态 musl），产物 `Features: proxy utc-conf utc-conf-v1`，在 B（aarch64 ImmortalWRT）与 A（x86_64 OpenWrt）实机启动并创建 TUN；libz 阻断已解除。另用 SDK `ipkg-build` 打包 `mynet-gnb` IPK（x86_64、aarch64_generic），在 A 上 `opkg install`→运行 UTC 策略 APPLIED→`opkg remove` 全流程通过。B 的 ImmortalWRT 使用 apk 3.0（v2 包被拒），已用 apk-tools 3 `mkpkg` 打 v3 APK（aarch64_cortex-a53），在 B 上 `apk add --allow-untrusted`→UTC APPLIED→`apk del` 通过。**
 
 2026-11-04 A2 接线批：按用户要求，将原 gnb_utc_runtime.c/h 的收发与帧检查实现合入 gnb_utc.c/h，worker 保留调用；gnb_utc_service.c/h 保留文件解析、持久 I/O 和单写者管理，避免把磁盘机制塞入 packet 路径。配置/策略/收发故障测试及 Darwin 构建通过；本批完整集成回归仍在推进。
 
