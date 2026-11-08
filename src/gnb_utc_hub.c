@@ -93,12 +93,21 @@ static int peer_valid(const gnb_utc_hub_peer_t *peer, uint64_t local_id) {
         if (peer->scope_id) return 0;
         for (i = 0; i < 10; ++i) if (peer->address[i]) return 0;
         if (peer->address[10] != 0xff || peer->address[11] != 0xff) return 0;
+        /* Same categories the plan validator refuses: unspecified and multicast
+         * endpoints can never be a real export. */
+        if (!peer->address[12] && !peer->address[13] && !peer->address[14] &&
+            !peer->address[15])
+            return 0;
+        if ((peer->address[12] & 0xf0U) == 0xe0U) return 0;
     } else {
         int mapped = 1;
+        if (peer->address[0] == 0xffU) return 0;
         for (i = 0; i < 10; ++i) {
             if (peer->address[i]) { mapped = 0; break; }
         }
         if (mapped && peer->address[10] == 0xff && peer->address[11] == 0xff) return 0;
+        for (i = 0; i < 16; ++i) if (peer->address[i]) break;
+        if (i == 16) return 0;
     }
     return 1;
 }

@@ -122,11 +122,19 @@ int main(void) {
 
     {
         const char *fixture = getenv("HUB_V2_FIXTURE");
-        if (fixture && *fixture) {
+        if (!fixture || !*fixture) {
+            fprintf(stderr, "HUB_V2_FIXTURE is required; the cross-language "
+                            "golden contract must not be skipped\n");
+            return 1;
+        }
+        {
             FILE *file = fopen(fixture, "rb");
             char golden[4096];
             size_t golden_length;
-            assert(file);
+            if (!file) {
+                fprintf(stderr, "cannot open HUB_V2_FIXTURE: %s\n", fixture);
+                return 1;
+            }
             golden_length = fread(golden, 1, sizeof(golden), file);
             assert(!ferror(file) && !fclose(file));
             assert(golden_length > 0 && golden_length < sizeof(golden));
@@ -140,13 +148,21 @@ int main(void) {
     }
     {
         const char *fixture = getenv("HUB_V2_NEGATIVES");
-        if (fixture && *fixture) {
+        if (!fixture || !*fixture) {
+            fprintf(stderr, "HUB_V2_NEGATIVES is required; the cross-language "
+                            "negative contract must not be skipped\n");
+            return 1;
+        }
+        {
             FILE *file = fopen(fixture, "rb");
             char *cases;
             long size;
             size_t offset = 0;
             unsigned int index;
-            assert(file);
+            if (!file) {
+                fprintf(stderr, "cannot open HUB_V2_NEGATIVES: %s\n", fixture);
+                return 1;
+            }
             assert(fseek(file, 0, SEEK_END) == 0);
             size = ftell(file);
             assert(size > 0 && size < 65536);
@@ -164,7 +180,11 @@ int main(void) {
                         break;
                     ++end;
                 }
-                case_length = end - offset + 1U;
+                /* The last case has no blank-line separator: its bytes end at
+                 * EOF, so the +1 that keeps a case's own newline must not be
+                 * applied there. */
+                case_length = end < (size_t)size ? end - offset + 1U : end - offset;
+                assert(case_length > 0);
                 if (gnb_utc_hub_parse(cases + offset, case_length, &parsed,
                                       error, sizeof(error)) == 0) {
                     fprintf(stderr, "negative fixture case %u was accepted\n",
@@ -174,7 +194,7 @@ int main(void) {
                 offset = end + 2U;
             }
             free(cases);
-            assert(index >= 9);
+            assert(index >= 13);
             puts("PASS utc-v2 cross-language negative fixture");
         }
     }
