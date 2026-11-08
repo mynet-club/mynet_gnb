@@ -118,10 +118,48 @@ int main(void) {
         projection.peers[0].family = 6;
         assert(gnb_utc_hub_format(&projection, text, sizeof(text), &length) != 0);
     }
-    puts("PASS utc-v2 rejects uppercase hex and IPv4-mapped family 6 addresses");
+    {
+        sample_projection(&projection);
+        memset(projection.peers[0].address, 0, 16);
+        assert(gnb_utc_hub_format(&projection, text, sizeof(text), &length) != 0);
+    }
+    {
+        sample_projection(&projection);
+        projection.peers[0].address[12] = 224;
+        assert(gnb_utc_hub_format(&projection, text, sizeof(text), &length) != 0);
+    }
+    {
+        sample_projection(&projection);
+        projection.peers[0].family = 6;
+        memset(projection.peers[0].address, 0, 16);
+        projection.peers[0].address[0] = 0xff;
+        projection.peers[0].address[1] = 0x02;
+        projection.peers[0].address[15] = 1;
+        assert(gnb_utc_hub_format(&projection, text, sizeof(text), &length) != 0);
+    }
+    {
+        sample_projection(&projection);
+        projection.peers[0].family = 6;
+        memset(projection.peers[0].address, 0, 16);
+        projection.peers[0].address[0] = 0x20;
+        projection.peers[0].address[1] = 0x01;
+        projection.peers[0].address[15] = 7;
+        assert(gnb_utc_hub_format(&projection, text, sizeof(text), &length) == 0);
+        assert(gnb_utc_hub_parse(text, length, &parsed, error, sizeof(error)) == 0);
+    }
+    puts("PASS utc-v2 rejects uppercase hex, mapped, unspecified and multicast addresses");
 
     {
         const char *fixture = getenv("HUB_V2_FIXTURE");
+        if (!fixture || !*fixture) {
+            static const char fallback[] =
+                "../../mynet_utc/tests/fixtures/hub_v2/projection.txt";
+            FILE *probe = fopen(fallback, "rb");
+            if (probe) {
+                fclose(probe);
+                fixture = fallback;
+            }
+        }
         if (fixture && *fixture) {
             FILE *file = fopen(fixture, "rb");
             char golden[4096];
@@ -140,6 +178,15 @@ int main(void) {
     }
     {
         const char *fixture = getenv("HUB_V2_NEGATIVES");
+        if (!fixture || !*fixture) {
+            static const char fallback[] =
+                "../../mynet_utc/tests/fixtures/hub_v2/negatives.txt";
+            FILE *probe = fopen(fallback, "rb");
+            if (probe) {
+                fclose(probe);
+                fixture = fallback;
+            }
+        }
         if (fixture && *fixture) {
             FILE *file = fopen(fixture, "rb");
             char *cases;
@@ -164,7 +211,8 @@ int main(void) {
                         break;
                     ++end;
                 }
-                case_length = end - offset + 1U;
+                case_length = end < (size_t)size ? end - offset + 1U
+                                                : end - offset;
                 if (gnb_utc_hub_parse(cases + offset, case_length, &parsed,
                                       error, sizeof(error)) == 0) {
                     fprintf(stderr, "negative fixture case %u was accepted\n",
@@ -174,7 +222,7 @@ int main(void) {
                 offset = end + 2U;
             }
             free(cases);
-            assert(index >= 9);
+            assert(index >= 13);
             puts("PASS utc-v2 cross-language negative fixture");
         }
     }
