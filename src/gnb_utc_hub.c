@@ -36,7 +36,6 @@ static int number(const char *value, uint64_t *output) {
 static int hex_nibble(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
     return -1;
 }
 
@@ -94,6 +93,12 @@ static int peer_valid(const gnb_utc_hub_peer_t *peer, uint64_t local_id) {
         if (peer->scope_id) return 0;
         for (i = 0; i < 10; ++i) if (peer->address[i]) return 0;
         if (peer->address[10] != 0xff || peer->address[11] != 0xff) return 0;
+    } else {
+        int mapped = 1;
+        for (i = 0; i < 10; ++i) {
+            if (peer->address[i]) { mapped = 0; break; }
+        }
+        if (mapped && peer->address[10] == 0xff && peer->address[11] == 0xff) return 0;
     }
     return 1;
 }
