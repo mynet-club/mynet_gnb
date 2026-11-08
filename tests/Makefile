@@ -15,3 +15,5 @@ check:
 	../build/tests/test_utc_service
 	$(CC) $(CFLAGS) $(GNB_HEADER_FLAGS) -DGNB_UTC_TESTING -I../src -I../libs test_utc_crash.c ../src/gnb_utc.c ../src/gnb_utc_service.c ../libs/ed25519/sha512.c -pthread -o ../build/tests/test_utc_crash
 	../build/tests/test_utc_crash
+	$(CC) $(CFLAGS) $(GNB_HEADER_FLAGS) -I../src test_utc_hub_contract.c ../src/gnb_utc_hub.c -o ../build/tests/test_utc_hub_contract
+	../build/tests/test_utc_hub_contract
