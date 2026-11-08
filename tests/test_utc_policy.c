@@ -72,10 +72,18 @@ static void atomicity_and_capacity(void) {
 }
 static void ipv6(void) {
     gnb_utc_table_t t; gnb_utc_policy_t p = policy(1); gnb_utc_endpoint_t e;
+    gnb_utc_policy_t mapped = policy(2);
     assert(!gnb_utc_init(&t));
     memset(p.endpoint.address, 0, 16); p.endpoint.address[15] = 1;
     p.endpoint.family = 6; p.endpoint.scope_id = 7;
     assert(!gnb_utc_apply(&t, 1, &p, 1));
+    /* A v4-mapped address spelled as family 6 is rejected locally, not just by
+     * the Hub projection. */
+    memset(mapped.endpoint.address, 0, 16);
+    mapped.endpoint.address[10] = 0xff; mapped.endpoint.address[11] = 0xff;
+    mapped.endpoint.address[12] = 203; mapped.endpoint.address[15] = 7;
+    mapped.endpoint.family = 6;
+    assert(gnb_utc_apply(&t, 2, &mapped, 1) == GNB_UTC_INVALID);
     assert(gnb_utc_accept(&t, 1, &p.endpoint, 1, 1));
     e = p.endpoint; e.scope_id++;
     assert(!gnb_utc_accept(&t, 1, &e, 1, 1));

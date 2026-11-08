@@ -25,8 +25,14 @@ static int valid(const gnb_utc_policy_t *p) {
         return !p->endpoint.scope_id && memcmp(p->endpoint.address, zero, 4) &&
             !memcmp(p->endpoint.address + 4, zero, 12) &&
             p->endpoint.address[0] < 224;
-    if (p->endpoint.family == 6)
+    if (p->endpoint.family == 6) {
+        /* Reject v4-mapped-as-v6 locally: family 6 is a real IPv6 destination,
+         * not another spelling of IPv4. */
+        static const uint8_t mapped[12] = {0, 0, 0, 0, 0, 0, 0, 0,
+                                           0, 0, 0xff, 0xff};
+        if (!memcmp(p->endpoint.address, mapped, sizeof(mapped))) return 0;
         return memcmp(p->endpoint.address, zero, 16) && p->endpoint.address[0] != 255;
+    }
     return 0;
 }
 static size_t find(const gnb_utc_table_t *t, uint64_t peer) {
