@@ -43,6 +43,39 @@ int gnb_utc_init(gnb_utc_table_t *t) {
 void gnb_utc_destroy(gnb_utc_table_t *t) {
     if (t) pthread_mutex_destroy(&t->lock);
 }
+int gnb_utc_snapshot(gnb_utc_table_t *t, gnb_utc_policy_t *out,
+                     size_t capacity, size_t *count) {
+    size_t i, used = 0;
+    if (!t || !out || !count) return GNB_UTC_INVALID;
+    pthread_mutex_lock(&t->lock);
+    for (i = 0; i < t->count; ++i) {
+        if (t->entries[i].blocked) continue;
+        if (used == capacity) {
+            pthread_mutex_unlock(&t->lock);
+            return GNB_UTC_CAPACITY;
+        }
+        out[used++] = t->entries[i].policy;
+    }
+    pthread_mutex_unlock(&t->lock);
+    *count = used;
+    return GNB_UTC_OK;
+}
+
+int gnb_utc_block_peer(gnb_utc_table_t *t, uint64_t peer_id) {
+    size_t i;
+    if (!t || !peer_id) return GNB_UTC_INVALID;
+    pthread_mutex_lock(&t->lock);
+    for (i = 0; i < t->count; ++i) {
+        if (t->entries[i].policy.peer_id == peer_id) {
+            t->entries[i].blocked = 1;
+            pthread_mutex_unlock(&t->lock);
+            return GNB_UTC_OK;
+        }
+    }
+    pthread_mutex_unlock(&t->lock);
+    return GNB_UTC_CONFLICT;
+}
+
 int gnb_utc_apply(gnb_utc_table_t *t, uint64_t gen,
                   const gnb_utc_policy_t *p, size_t count) {
     size_t i, j, additions = 0;

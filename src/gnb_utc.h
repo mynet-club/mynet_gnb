@@ -62,6 +62,13 @@ gnb_utc_action_t gnb_utc_route(gnb_utc_table_t *table, uint64_t peer_id,
 /* Source filtering supplements, never replaces, native GNB authentication. */
 int gnb_utc_accept(gnb_utc_table_t *table, uint64_t peer_id,
                    const gnb_utc_endpoint_t *source, uint64_t now, uint64_t tick);
+/* Snapshot every managed, non-blocked policy so a delta executor can merge a
+ * per-peer update without disturbing other peers. Main thread only. */
+int gnb_utc_snapshot(gnb_utc_table_t *table, gnb_utc_policy_t *out,
+                     size_t capacity, size_t *count);
+/* Mark one managed peer blocked regardless of mode. Only a newer pair_gen
+ * policy revives it. */
+int gnb_utc_block_peer(gnb_utc_table_t *table, uint64_t peer_id);
 /* Integration entry points: callers provide the final peer and opaque bytes.
  * Only NATIVE permits the caller to continue its existing route selection. */
 struct _gnb_core_t;
