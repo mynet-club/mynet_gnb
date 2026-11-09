@@ -165,21 +165,37 @@ done:
     close(fd); unlink(temporary); return result;
 #endif
 }
+/* Guidance file for the agent: the identity of the running service. It is not
+ * durable state, is never read back as authority, and a failed write must not
+ * affect routing or the persisted table (same treatment as status). */
+static void update_identity(gnb_utc_service_t *s, char *scratch) {
+    char expected[160]; int n;
+    n = snprintf(expected, sizeof(expected), "identity-v1 %"PRIu64" %s %"PRIu64"\n",
+                 s->local_id, s->boot_id, s->process_id);
+    if (n < 0 || (size_t)n >= sizeof(expected)) return;
+    if (read_file(s, "utc.identity", scratch) == 0 && !strcmp(scratch, expected)) return;
+    (void)write_file(s, "utc.identity", expected);
+}
 /* Space-separated fixed grammar, no comments, aliases or ignored trailing keys. */
 static int split(char *line, char **v, int max) {
     int n = 0; char *save, *word = strtok_r(line, " \t\r", &save);
     while (word) { if (n == max) return -1; v[n++] = word; word = strtok_r(NULL, " \t\r", &save); }
     return n;
 }
-/* A record is canonical numeric/hex metadata; no arbitrary payload parsing. */
-static int record(char **v, int n, gnb_utc_policy_t *p, uint64_t now, uint64_t tick) {
+/* A record is canonical numeric/hex metadata; no arbitrary payload parsing.
+ * state-v2 entries append the two lease watermarks; utc-v1 records and
+ * state-v1 entries must not carry them. */
+static int record(char **v, int n, gnb_utc_policy_t *p, uint64_t now, uint64_t tick,
+                  int with_epochs) {
     uint64_t mode, family, port, scope;
     memset(p, 0, sizeof(*p));
-    if (n != 11 || number(v[1], &p->peer_id) || number(v[2], &p->pair_id) ||
+    if (n != (with_epochs ? 13 : 11) || number(v[1], &p->peer_id) || number(v[2], &p->pair_id) ||
         number(v[3], &p->pair_gen) || number(v[4], &mode) || mode > 1 ||
         number(v[5], &p->expires_at) || number(v[6], &family) || family > 255 ||
         unhex(v[7], p->endpoint.address, 16) || number(v[8], &port) || port > 65535 ||
-        number(v[9], &scope) || scope > UINT32_MAX || unhex(v[10], p->digest, 32)) return -1;
+        number(v[9], &scope) || scope > UINT32_MAX || unhex(v[10], p->digest, 32) ||
+        (with_epochs && (number(v[11], &p->lease_epoch) ||
+                         number(v[12], &p->placement_epoch)))) return -1;
     p->mode = (gnb_utc_mode_t)mode; p->endpoint.family = (uint8_t)family;
     p->endpoint.port = (uint16_t)port; p->endpoint.scope_id = (uint32_t)scope;
     if (p->mode == GNB_UTC_EXPORT) {
@@ -189,11 +205,18 @@ static int record(char **v, int n, gnb_utc_policy_t *p, uint64_t now, uint64_t t
     }
     return 0;
 }
-static int emit_record(char *b, size_t *used, const char *type, const gnb_utc_policy_t *p) {
+static int emit_record_ex(char *b, size_t *used, const char *type,
+                          const gnb_utc_policy_t *p, int with_epochs) {
     char address[33], digest[65]; hex(p->endpoint.address, 16, address); hex(p->digest, 32, digest);
-    return append(b, used, "%s %"PRIu64" %"PRIu64" %"PRIu64" %u %"PRIu64" %u %s %u %u %s\n",
+    if (append(b, used, "%s %"PRIu64" %"PRIu64" %"PRIu64" %u %"PRIu64" %u %s %u %u %s",
         type, p->peer_id, p->pair_id, p->pair_gen, (unsigned)p->mode, p->expires_at,
-        p->endpoint.family, address, p->endpoint.port, p->endpoint.scope_id, digest);
+        p->endpoint.family, address, p->endpoint.port, p->endpoint.scope_id, digest)) return -1;
+    if (with_epochs && append(b, used, " %"PRIu64" %"PRIu64, p->lease_epoch, p->placement_epoch))
+        return -1;
+    return append(b, used, "\n");
+}
+static int emit_record(char *b, size_t *used, const char *type, const gnb_utc_policy_t *p) {
+    return emit_record_ex(b, used, type, p, 0); /* status-v1 keeps its exact bytes */
 }
 /* utc-v2 writes IPv4 endpoints in the canonical ::ffff: layout; the local
  * policy table keeps the address in the first four bytes with zero padding. */
@@ -205,6 +228,8 @@ static int hub_peer_policy(const gnb_utc_hub_peer_t *peer, uint64_t now, uint64_
     policy->peer_id = peer->peer_id;
     policy->pair_id = peer->pair_id;
     policy->pair_gen = peer->pair_gen;
+    policy->lease_epoch = peer->lease_epoch;
+    policy->placement_epoch = peer->placement_epoch;
     policy->mode = peer->mode == 1 ? GNB_UTC_EXPORT : GNB_UTC_DIRECT;
     policy->expires_at = peer->expires_at;
     policy->endpoint.family = peer->family;
@@ -275,7 +300,7 @@ static int config(gnb_utc_service_t *s, char *text, gnb_utc_table_t *next, char 
     while ((line = strtok_r(NULL, "\n", &save))) {
         n = split(line, v, 12);
         if (count == GNB_UTC_MAX_PEERS || n < 1 || strcmp(v[0], "peer") ||
-            record(v, n, policies + count, now, tick) || policies[count].peer_id == local) return -1;
+            record(v, n, policies + count, now, tick, 0) || policies[count].peer_id == local) return -1;
         if (policies[count].mode == GNB_UTC_EXPORT &&
             (s->ur_server || !(s->address_families & (policies[count].endpoint.family == 4 ? 1u : 2u)))) return GNB_UTC_UNSUPPORTED;
         ++count;
@@ -292,26 +317,31 @@ static void copy_table(gnb_utc_table_t *dst, gnb_utc_table_t *src) {
 }
 static int encode(gnb_utc_service_t *s, gnb_utc_table_t *t, char *b) {
     size_t used = 0, i; char digest[129];
-    if (append(b, &used, "state-v1 %s %s %"PRIu64" %"PRIu64"\n", s->scope, s->instance, s->local_id, t->config_gen)) return -1;
-    for (i = 0; i < t->count; ++i) if (emit_record(b, &used, "entry", &t->entries[i].policy)) return -1;
+    if (append(b, &used, "state-v2 %s %s %"PRIu64" %"PRIu64"\n", s->scope, s->instance, s->local_id, t->config_gen)) return -1;
+    for (i = 0; i < t->count; ++i) if (emit_record_ex(b, &used, "entry", &t->entries[i].policy, 1)) return -1;
     hash(b, digest); return append(b, &used, "sha512 %s\n", digest);
 }
 /* Recovery never reactivates an export from disk. New authorization projection
- * with a larger pair generation is needed. Released direct tombstones survive. */
+ * with a larger pair generation is needed. Released direct tombstones survive.
+ * state-v1 remains readable with zero watermarks; state-v2 entries carry the
+ * persisted epochs. A v2 entry without epochs (or a v1 entry with them) is
+ * corruption, not an older format. */
 static int decode(gnb_utc_service_t *s, char *b, gnb_utc_table_t *out, char scope[64], char instance[64]) {
     char expected[129], *footer = strstr(b, "sha512 ");
-    char *line, *save, *v[12]; uint64_t local, gen; int n; size_t count = 0;
+    char *line, *save, *v[14]; uint64_t local, gen; int n, version_2 = 0; size_t count = 0;
     gnb_utc_policy_t policies[GNB_UTC_MAX_PEERS];
     if (!footer || strlen(footer) != 136 || footer[135] != '\n') return -1;
     memcpy(expected, footer + 7, 128); expected[128] = 0; *footer = 0;
     { char actual[129]; hash(b, actual); if (strcmp(actual, expected)) return -1; }
-    line = strtok_r(b, "\n", &save); if (!line || split(line, v, 12) != 5 || strcmp(v[0], "state-v1") ||
-        !token(v[1]) || !token(v[2]) || number(v[3], &local) || local != s->local_id || number(v[4], &gen) || !gen) return -1;
+    line = strtok_r(b, "\n", &save); if (!line || split(line, v, 14) != 5 || !token(v[1]) || !token(v[2]) ||
+        number(v[3], &local) || local != s->local_id || number(v[4], &gen) || !gen) return -1;
+    if (!strcmp(v[0], "state-v2")) version_2 = 1;
+    else if (strcmp(v[0], "state-v1")) return -1;
     strcpy(scope, v[1]); strcpy(instance, v[2]);
     while ((line = strtok_r(NULL, "\n", &save))) {
-        n = split(line, v, 12);
+        n = split(line, v, 14);
         if (count == GNB_UTC_MAX_PEERS || n < 1 || strcmp(v[0], "entry") ||
-            record(v, n, policies + count, time(NULL), ticks())) return -1;
+            record(v, n, policies + count, time(NULL), ticks(), version_2)) return -1;
         ++count;
     }
     if (gnb_utc_apply(out, gen, policies, count)) return -1;
@@ -401,6 +431,7 @@ gnb_utc_service_t *gnb_utc_service_open(const char *directory, uint64_t local_id
       if (fd < 0) goto failure;
       if (read(fd, random, sizeof(random)) != sizeof(random)) { close(fd); goto failure; }
       close(fd); hex(random, sizeof(random), s->boot_id); }
+    update_identity(s, buffer);
 #endif
     for (i = 0; i < 4; ++i) {
         char name[32], scope[64], instance[64], digest[129]; int r; gnb_utc_table_t candidate;

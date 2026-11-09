@@ -94,6 +94,7 @@ int main(void) {
     assert(!gnb_utc_service_open(directory, 42, 1)); /* no trusted state remains */
     for (i = 0; i < 3; ++i) { snprintf(file, sizeof(file), "utc.state.%d", i); remove_file(file); }
     remove_file("utc.managed"); remove_file("utc.conf"); remove_file("utc.status"); remove_file("utc.lock");
+    remove_file("utc.identity");
     assert(!rmdir(directory));
     puts("UTC config/restart/missing-file/single-replica corruption/release/disaster: PASS");
     return 0;

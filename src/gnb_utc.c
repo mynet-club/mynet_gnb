@@ -7,8 +7,25 @@ static int endpoint_equal(const gnb_utc_endpoint_t *a, const gnb_utc_endpoint_t 
 }
 static int policy_equal(const gnb_utc_policy_t *a, const gnb_utc_policy_t *b) {
     return a->peer_id == b->peer_id && a->pair_id == b->pair_id &&
-        a->pair_gen == b->pair_gen && a->mode == b->mode &&
+        a->pair_gen == b->pair_gen && a->lease_epoch == b->lease_epoch &&
+        a->placement_epoch == b->placement_epoch && a->mode == b->mode &&
         a->expires_at == b->expires_at &&
+        !memcmp(a->digest, b->digest, GNB_UTC_DIGEST_SIZE) &&
+        endpoint_equal(&a->endpoint, &b->endpoint);
+}
+/* Same-generation content changes are lease renewals: the authorization
+ * watermarks and the expiry may only move forward. A normal RENEW keeps both
+ * epochs and only extends expiry; advancing either epoch is also accepted. */
+#define GNB_UTC_LEASE_RENEWABLE(c, p) \
+    ((p)->expires_at >= (c)->expires_at && \
+     (p)->lease_epoch >= (c)->lease_epoch && \
+     (p)->placement_epoch >= (c)->placement_epoch)
+/* A renewal may only move expiry and epochs. The authorization identity of the
+ * pair stays byte-identical; an endpoint, digest or mode change needs a newer
+ * pair_gen (ADR-0005). */
+static int policy_identity_equal(const gnb_utc_policy_t *a, const gnb_utc_policy_t *b) {
+    return a->peer_id == b->peer_id && a->pair_id == b->pair_id &&
+        a->mode == b->mode &&
         !memcmp(a->digest, b->digest, GNB_UTC_DIGEST_SIZE) &&
         endpoint_equal(&a->endpoint, &b->endpoint);
 }
@@ -116,9 +133,19 @@ int gnb_utc_apply(gnb_utc_table_t *t, uint64_t gen,
         if (p[i].pair_gen < t->entries[j].policy.pair_gen) {
             result = GNB_UTC_REWIND; goto done;
         }
-        if ((p[i].pair_gen == t->entries[j].policy.pair_gen || gen == t->config_gen)
-            && !policy_equal(p + i, &t->entries[j].policy)) {
+        if (gen == t->config_gen && !policy_equal(p + i, &t->entries[j].policy)) {
             result = GNB_UTC_CONFLICT; goto done;
+        }
+        if (p[i].pair_gen == t->entries[j].policy.pair_gen &&
+            !policy_equal(p + i, &t->entries[j].policy)) {
+            if (!policy_identity_equal(p + i, &t->entries[j].policy)) {
+                result = GNB_UTC_CONFLICT; goto done;
+            }
+            if (!GNB_UTC_LEASE_RENEWABLE(&t->entries[j].policy, p + i)) {
+                /* Identity already matched, so only a watermark regression
+                 * remains: expiry or an epoch moved backwards. */
+                result = GNB_UTC_REWIND; goto done;
+            }
         }
     }
     if (t->count + additions > GNB_UTC_MAX_PEERS) {
@@ -147,8 +174,9 @@ int gnb_utc_apply(gnb_utc_table_t *t, uint64_t gen,
         } else if (p[i].pair_gen > t->entries[j].policy.pair_gen) {
             t->entries[j].blocked = 0;
         }
-        if (t->entries[j].policy.pair_gen != p[i].pair_gen ||
-            !t->entries[j].policy.peer_id) t->entries[j].policy = p[i];
+        /* A renewal updates the policy but never clears a latched block; only
+         * a newer pair_gen revives an export. */
+        t->entries[j].policy = p[i];
     }
     t->snapshot_count = count;
     for (i = 0; i < count; ++i) t->snapshot_peers[i] = p[i].peer_id;

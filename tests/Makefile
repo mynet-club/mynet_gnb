@@ -21,3 +21,5 @@ check:
 	../build/tests/test_utc_hub_exec
 	$(CC) $(CFLAGS) $(GNB_HEADER_FLAGS) -I../src -I../libs test_utc_hub_service.c ../src/gnb_utc.c ../src/gnb_utc_service.c ../src/gnb_utc_hub.c ../src/gnb_utc_hub_exec.c ../libs/ed25519/sha512.c -pthread -o ../build/tests/test_utc_hub_service
 	../build/tests/test_utc_hub_service
+	$(CC) $(CFLAGS) $(GNB_HEADER_FLAGS) -I../src -I../libs test_utc_epoch.c ../src/gnb_utc.c ../src/gnb_utc_service.c ../src/gnb_utc_hub.c ../src/gnb_utc_hub_exec.c ../libs/ed25519/sha512.c -pthread -o ../build/tests/test_utc_epoch
+	../build/tests/test_utc_epoch

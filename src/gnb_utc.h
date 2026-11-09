@@ -25,6 +25,8 @@ typedef struct {
 } gnb_utc_endpoint_t;
 typedef struct {
     uint64_t peer_id, pair_id, pair_gen;
+    /* utc-v2 watermarks; utc-v1 projections carry no epochs and use 0. */
+    uint64_t lease_epoch, placement_epoch;
     uint8_t digest[GNB_UTC_DIGEST_SIZE];
     gnb_utc_mode_t mode;
     uint64_t expires_at;       /* trusted wall-clock seconds */
@@ -51,7 +53,12 @@ void gnb_utc_destroy(gnb_utc_table_t *table);
 /* Complete snapshot; omission retains managed history but blocks that peer.
  * Input is an already authenticated, validated and durably committed local
  * projection. This function is NOT a parser, persistence layer or lease check.
- * Equal generations are idempotent only for identical policy fields. */
+ * Equal generations are idempotent only for identical policy fields. A content
+ * change at the same pair_gen is only a lease renewal: pair_id/mode/endpoint/
+ * digest must be identical, and expiry plus both epochs must not decrease.
+ * A normal RENEW keeps the epochs and only extends expiry; advancing an epoch
+ * is also accepted. Any identity change needs a newer pair_gen. Otherwise the
+ * update is rejected without touching the table. */
 int gnb_utc_apply(gnb_utc_table_t *table, uint64_t config_gen,
                   const gnb_utc_policy_t *policies, size_t count);
 /* Caller provides trusted time and a process monotonic clock. Expiry latches.

@@ -406,9 +406,22 @@ peer <peer-uuid> <pair-id> <pair-gen> <mode> <expires-at> <family> <address-32he
 
 更新错误由同一枚举/状态口径报告：CONFIG_INVALID、VERSION_REWIND、GENERATION_CONFLICT、CAPACITY_EXCEEDED、UNSUPPORTED、SCOPE_MISMATCH；I/O/恢复失败另报 STORAGE_FAILED、RECOVERY_REQUIRED 等。config/policy/status 不含 VPN 私钥、业务 payload、订单或价格。
 
+### utc-v2 水位与续约
+
+`utc-v2` 的每个 peer 携带 `lease_epoch`/`placement_epoch`，GNB 将其与 `pair_gen` 一起存入本地策略表和持久状态，作为每 peer 的单调水位。同 `pair_gen` 的内容变化只在纯续约时允许：`pair_id`/`mode`/`family`/`address`/`port`/`scope_id`/`digest` 必须与现有行逐字段相同，且 `expires_at`、`lease_epoch`、`placement_epoch` 均不得回退。普通 RENEW（`rotate=false`）保持两个 epoch 不变、只延长 `expires_at`，同样接受；epoch 前进也接受。身份字段任一变化报 GENERATION_CONFLICT，必须升 `pair_gen`（ADR-0005）。任一水位（过期时间或 epoch）回退报 VERSION_REWIND；`config_gen` 未变的重复投影仍仅对完全相同的字段幂等。**续约只推进水位，不解除已锁存阻断**；恢复后的 export 仍需更大 `pair_gen` 的显式投影才能转发。`pair_gen` 增大仍按原规则允许完整策略变更；本轮不额外施加跨代 epoch 检查。
+
+`utc-v1` 无 epoch 字段，其记录按原有规则解码为 epoch 0；同 `pair_gen` 的内容变化保持原 GENERATION_CONFLICT 语义，不因本次扩展而放宽。
+
 ### 恢复与状态
 
-`utc.managed` 是永久保留的完整预备状态，不只是布尔标记；`utc.state.0/1/2` 是另外三份完整副本。规范文本包含所有受管/已释放记录和水位，以 SHA-512 检查完整性；它不替代受信文件权限或业务授权。
+`utc.managed` 是永久保留的完整预备状态，不只是布尔标记；`utc.state.0/1/2` 是另外三份完整副本。规范文本包含所有受管/已释放记录和水位，以 SHA-512 检查完整性；它不替代受信文件权限或业务授权。当前导出一律写 `state-v2`：
+
+```text
+state-v2 <scope-token> <instance-token> <local-uuid> <config-gen>
+entry <peer-uuid> <pair-id> <pair-gen> <mode> <expires-at> <family> <address-32hex> <port> <ipv6-scope-id> <manifest-digest-64hex> <lease-epoch> <placement-epoch>
+```
+
+解码同时接受既有 `state-v1`（无末尾两个 epoch 字段，水位视为 0，仅用于恢复旧状态）；`state-v2` 条目缺少 epoch 字段、或 `state-v1` 条目多出该字段均视为损坏。四份副本/`utc.managed` 的写入顺序、选代与 fail-closed 语义不变；重启、断电、坏文件不得回退 epoch 或复活旧代。升级不产生同代 v1/v2 混合副本：持久化只在 `config_gen` 前进时发生，旧副本代数必然更低。
 
 先逐份临时文件写全/fsync/rename/目录 fsync，四份都成功后才发布内存策略。初次启用在 managed 记录写入后中断，也能恢复已知受管集合；没有被激活的预备状态不能凭磁盘记录转发 export。部分持久化失败时冻结更新、阻断本次涉及的已有 export；未变更 pair 保持原约束并独立到期，等待可信恢复；不倒退版本补偿。
 
@@ -425,7 +438,9 @@ policy <与配置 peer 行相同的字段>
 peer <peer-uuid> <pair-id> <pair-gen> <APPLIED|BLOCKED> <reason> <manifest-digest-64hex> <local-digest-128hex>
 ```
 
-local-digest 是对应规范 `policy ...\n` 行（含换行）的 SHA-512，用于核对本端投影；共同 manifest digest 与本端摘要分开。计数器为当前 boot 的诊断，不是额度或交付计量，kernel accepted 不等于远端收到。执行器须核对 scope/instance/PID/当前 boot/代号/摘要与新鲜度；APPLIED 仅为已持久并加载的事实，GNB 不写 VERIFIED/EFFECTIVE。
+local-digest 是对应规范 `policy ...\n` 行（含换行）的 SHA-512，用于核对本端投影；共同 manifest digest 与本端摘要分开。计数器为当前 boot 的诊断，不是额度或交付计量，kernel accepted 不等于远端收到。执行器须核对 scope/instance/PID/当前 boot/代号/摘要与新鲜度；APPLIED 仅为已持久并加载的事实，GNB 不写 VERIFIED/EFFECTIVE。`utc.status` 格式保持不变，agent 不依赖 epoch 字段；水位只持久化在策略表与 `state-v2` 中。
+
+service open 另写引导文件 `utc.identity`，内容为 `identity-v1 <local-uuid> <boot-id-32hex> <pid>`，0600 普通文件、原子替换；不存在或 boot/PID 变化时更新，已一致则不重写。它是 agent 发布 `utc-v2` 所需的身份提示，不是受管状态，不参与 `has_state`/恢复判定，写失败与 status 同级处理（不影响路由或旧表）。
 
 热更新与到期检查在 primary UDP 周期执行，不依赖 TUN 流量。墙钟到期和单调截止均阻断，回拨不能解除已锁存过期。原生 core.flag=2 热重启在 workers 停止后移交 writer，恢复新 boot 与阻断状态，不遗留旧锁或复用旧成功状态。
 
@@ -450,7 +465,7 @@ sudo python3 tests/test_utc_topology.py --binary-dir "$PWD" --dual --safe-index
 | D2/D9 布局与默认兼容 | node/map 头无差异；真实第三 peer、Index 和原生 gnb_ctl 热重启；未配置 UTC 的第三节点正常 |
 | D4/D6 候选与回退 | 定向 DETECT 抑制、最终目标 route 回调覆盖、尾部再检查；真实有 native 候选时选中 pair 无原生 UDP；TCP 中断不回退 |
 | D5 UR/Index/LAN 边界 | Index 普通/secure 注册、查询与响应被捕获；UR 组合显式拒绝；LAN 广播无目标排除，定向 LAN_PING 仍受来源 guard |
-| D7/D8/D14 配置、热载、状态 | 配置/版本/作用域/坏文件/缺文件测试；空闲到期、boot/PID 与原生热重启；UTC 格式严格版本化 |
+| D7/D8/D14 配置、热载、状态 | 配置/版本/作用域/坏文件/缺文件测试；空闲到期、boot/PID 与原生热重启；UTC 格式严格版本化；`state-v1`/`state-v2` 解码、epoch 纯续约水位与 `utc.identity` |
 | D11 失效与恢复 | 初次/后续更新 × 错误/进程退出 × 24 I/O 边界 × 单副本损坏，共 288 个故障用例；删除、过期、重启不复活 |
 | D13 单侧/双侧出口 | 真实 GNB A-S 与 A-D 驱动拓扑，各自验证双向 TUN、稳定端口与 TCP 重连；IPv4/IPv6 socket 收发单测 |
 | D10/D12 双端协调边界 | GNB 提供 pair_gen/摘要/boot/APPLIED；prepare/verify/confirm/补偿是 agent/A2 的后续集成，不由驱动伪造全局成功 |
