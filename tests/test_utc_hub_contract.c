@@ -160,11 +160,19 @@ int main(void) {
                 fixture = fallback;
             }
         }
-        if (fixture && *fixture) {
+        if (!fixture || !*fixture) {
+            fprintf(stderr, "HUB_V2_FIXTURE is required; the cross-language "
+                            "golden contract must not be skipped\n");
+            return 1;
+        }
+        {
             FILE *file = fopen(fixture, "rb");
             char golden[4096];
             size_t golden_length;
-            assert(file);
+            if (!file) {
+                fprintf(stderr, "cannot open HUB_V2_FIXTURE: %s\n", fixture);
+                return 1;
+            }
             golden_length = fread(golden, 1, sizeof(golden), file);
             assert(!ferror(file) && !fclose(file));
             assert(golden_length > 0 && golden_length < sizeof(golden));
@@ -187,13 +195,21 @@ int main(void) {
                 fixture = fallback;
             }
         }
-        if (fixture && *fixture) {
+        if (!fixture || !*fixture) {
+            fprintf(stderr, "HUB_V2_NEGATIVES is required; the cross-language "
+                            "negative contract must not be skipped\n");
+            return 1;
+        }
+        {
             FILE *file = fopen(fixture, "rb");
             char *cases;
             long size;
             size_t offset = 0;
             unsigned int index;
-            assert(file);
+            if (!file) {
+                fprintf(stderr, "cannot open HUB_V2_NEGATIVES: %s\n", fixture);
+                return 1;
+            }
             assert(fseek(file, 0, SEEK_END) == 0);
             size = ftell(file);
             assert(size > 0 && size < 65536);

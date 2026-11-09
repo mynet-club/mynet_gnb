@@ -5,6 +5,12 @@ ifneq (,$(findstring clang,$(shell $(CC) --version 2>/dev/null)))
 GNB_HEADER_FLAGS += -Wno-deprecated-non-prototype
 endif
 .PHONY: check
+# The utc-v2 contract fixture lives in the UTC repo. A missing fixture used to
+# leave the cross-language cases silently unexecuted; resolve the sibling
+# workspace by default and fail loudly when it is absent.
+HUB_V2_DIR ?= $(abspath $(CURDIR)/../../mynet_utc/tests/fixtures/hub_v2)
+export HUB_V2_FIXTURE ?= $(HUB_V2_DIR)/projection.txt
+export HUB_V2_NEGATIVES ?= $(HUB_V2_DIR)/negatives.txt
 check:
 	@mkdir -p ../build/tests
 	$(CC) $(CFLAGS) $(GNB_HEADER_FLAGS) -I../src -I../libs test_utc_policy.c ../src/gnb_utc.c ../src/gnb_utc_service.c ../src/gnb_utc_hub.c ../src/gnb_utc_hub_exec.c ../libs/ed25519/sha512.c -pthread -o ../build/tests/test_utc_policy
