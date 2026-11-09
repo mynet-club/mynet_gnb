@@ -14,6 +14,7 @@ typedef struct {
     char boot_id[33], config_hash[129], reason[32];
     uint64_t local_id, last_poll, process_id;
     int managed, fault, lock_fd;
+    int identity_pending; /* identity write deferred until the lock is held */
     unsigned address_families; /* bit 0 IPv4, bit 1 IPv6 */
     int ur_server;
 } gnb_utc_service_t;

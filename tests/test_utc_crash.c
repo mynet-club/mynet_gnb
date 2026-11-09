@@ -16,7 +16,8 @@ static unsigned event_count, stop_at;
 static int crash;
 int gnb_utc_test_io_event(const char *name, const char *phase) {
     (void)phase;
-    if (!strcmp(name, "utc.status")) return 0;
+    /* Best-effort files are outside the managed persistence crash window. */
+    if (!strcmp(name, "utc.status") || !strcmp(name, "utc.identity")) return 0;
     if (++event_count != stop_at) return 0;
     if (crash) _exit(73);
     errno = EIO; return 1;

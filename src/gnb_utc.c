@@ -138,7 +138,11 @@ int gnb_utc_apply(gnb_utc_table_t *t, uint64_t gen,
         }
         if (p[i].pair_gen == t->entries[j].policy.pair_gen &&
             !policy_equal(p + i, &t->entries[j].policy)) {
-            if (!policy_identity_equal(p + i, &t->entries[j].policy)) {
+            /* utc-v1 and state-v1 records carry no epochs (lease 0); the
+             * same-generation renewal path is a state-v2 feature and must not
+             * relax their original conflict semantics (ADR-0005). */
+            if (!t->entries[j].policy.lease_epoch ||
+                !policy_identity_equal(p + i, &t->entries[j].policy)) {
                 result = GNB_UTC_CONFLICT; goto done;
             }
             if (!GNB_UTC_LEASE_RENEWABLE(&t->entries[j].policy, p + i)) {

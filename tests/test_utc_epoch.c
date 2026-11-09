@@ -106,6 +106,39 @@ static void renewal_apply(void) {
     puts("PASS same pair_gen renewal vs conflict/rewind watermarks");
 }
 
+/* Epoch-less records (utc-v1 conf / state-v1 restore) keep the original
+ * strict semantics: any same pair_gen content change, including an expiry
+ * extension, stays a conflict. The renewal path is a state-v2 feature. */
+static void v1_records_keep_conflict_semantics(void) {
+    gnb_utc_table_t t;
+    gnb_utc_policy_t current, update;
+    assert(!gnb_utc_init(&t));
+    current = policy(7, 8, 1, 0, 0, 1000, 9000);
+    assert(!gnb_utc_apply(&t, 1, &current, 1));
+    assert(t.entries[0].policy.lease_epoch == 0);
+
+    /* Same pair_gen with a later expiry is a conflict, not a renewal. */
+    update = current; update.expires_at = 2000;
+    assert(gnb_utc_apply(&t, 2, &update, 1) == GNB_UTC_CONFLICT);
+
+    /* The same change carrying epochs is still a conflict: v1 records may
+     * only change through a newer pair_gen. */
+    update = current; update.lease_epoch = 1; update.placement_epoch = 1;
+    update.expires_at = 2000;
+    assert(gnb_utc_apply(&t, 3, &update, 1) == GNB_UTC_CONFLICT);
+
+    /* Byte-identical content stays idempotent at a new config_gen. */
+    update = current;
+    assert(!gnb_utc_apply(&t, 4, &update, 1));
+
+    /* A newer pair_gen may change the content freely. */
+    update = current; update.pair_gen = 2; update.expires_at = 2000;
+    assert(!gnb_utc_apply(&t, 5, &update, 1));
+    assert(t.entries[0].policy.expires_at == 2000);
+    gnb_utc_destroy(&t);
+    puts("PASS epoch-less records keep original same pair_gen conflict semantics");
+}
+
 static void write_text(const char *dir, const char *name, const char *text) {
     char file[1200]; FILE *f;
     snprintf(file, sizeof(file), "%s/%s", dir, name);
@@ -166,13 +199,13 @@ static void service_renewal_and_state(void) {
     { char file[1200]; snprintf(file, sizeof(file), "%s/utc.identity", dir);
       assert(access(file, F_OK) != 0); }
     s = gnb_utc_service_open(dir, 42, 1); assert(s); assert(!s->managed);
-    identity_matches(dir, s);
     assert(gnb_utc_service_has_state(dir) == 0); /* identity is not managed state */
     strcpy(boot, s->boot_id);
 
     projection(text, sizeof(text), boot, s->process_id, 1, 1, 1, e1, 9555);
     write_text(dir, "utc.conf", text);
     assert(!poll(s)); assert(s->managed && s->table.config_gen == 1);
+    identity_matches(dir, s); /* stamped by the first lock-holding poll */
     assert(routed_port(&s->table, 7) == 9555);
     assert(entry(s, 7)->policy.lease_epoch == 1 && entry(s, 7)->policy.placement_epoch == 1);
 
@@ -262,9 +295,23 @@ static void state_v1_compatibility(void) {
     memset(&e, 0, sizeof(e));
     assert(gnb_utc_route(&s->table, 7, now + 1, 1, &e) == GNB_UTC_BLOCK);
 
+    /* The frozen v1 semantics: an epoch-less record cannot take a same
+     * pair_gen content change, so the epoch-bearing upgrade needs a newer
+     * pair_gen. */
     projection(text, sizeof(text), s->boot_id, s->process_id, 3, 1, 1, now + 6000, 9555);
     write_text(dir, "utc.conf", text);
+    assert(poll(s));
+    assert(!strcmp(s->reason, "GENERATION_CONFLICT"));
+    assert(s->table.config_gen == 2 && entry(s, 7)->policy.pair_gen == 1);
+
+    { int n = snprintf(text, sizeof(text),
+        "utc-v2 epoch.scope epoch-instance 42 3 %s %"PRIu64" 3\n"
+        "peer 7 8 2 1 1 1 %"PRIu64" 4 00000000000000000000ffffcb007107 9555 0 %s\n",
+        s->boot_id, s->process_id, now + 6000, manifest);
+      assert(n > 0 && (size_t)n < sizeof(text)); }
+    write_text(dir, "utc.conf", text);
     assert(!poll(s)); assert(s->table.config_gen == 3);
+    assert(entry(s, 7)->policy.pair_gen == 2);
     assert(entry(s, 7)->policy.lease_epoch == 1);
     for (i = 0; i < 3; ++i) {
         char name[32];
@@ -322,19 +369,26 @@ static void state_v2_corruption(void) {
 
 /* Identity is rewritten on boot/PID change and repairs loose permissions. */
 static void identity_lifecycle(void) {
-    char dir[] = "/tmp/gnb-utc-identity-XXXXXX", file[1200];
-    char first[33], second[33]; gnb_utc_service_t *s;
+    char dir[] = "/tmp/gnb-utc-identity-XXXXXX", file[1200], text[1024];
+    char first[33], second[33]; gnb_utc_service_t *s; struct stat st;
+    uint64_t now = (uint64_t)time(NULL);
     assert(mkdtemp(dir));
+    /* A never-enabled core holds no instance lock yet and must not stamp
+     * utc.identity: the agent bootstraps from the disclose-only status. */
     s = gnb_utc_service_open(dir, 42, 1); assert(s);
-    identity_matches(dir, s);
+    snprintf(file, sizeof(file), "%s/utc.identity", dir);
+    assert(stat(file, &st));
     strcpy(first, s->boot_id);
+    projection(text, sizeof(text), first, s->process_id, 1, 1, 1, now + 1000, 9555);
+    write_text(dir, "utc.conf", text);
+    assert(!poll(s));
+    identity_matches(dir, s); /* stamped by the first poll holding the lock */
     gnb_utc_service_close(s);
 
     s = gnb_utc_service_open(dir, 42, 1); assert(s);
     assert(strcmp(first, s->boot_id));
     identity_matches(dir, s);
     strcpy(second, s->boot_id);
-    snprintf(file, sizeof(file), "%s/utc.identity", dir);
     assert(!chmod(file, 0644));
     gnb_utc_service_close(s);
 
@@ -348,6 +402,7 @@ static void identity_lifecycle(void) {
 
 int main(void) {
     renewal_apply();
+    v1_records_keep_conflict_semantics();
     service_renewal_and_state();
     state_v1_compatibility();
     state_v2_corruption();

@@ -426,12 +426,16 @@ gnb_utc_service_t *gnb_utc_service_open(const char *directory, uint64_t local_id
           if (path(s, names[i], file)) goto failure;
           if (!lstat(file, &st) || errno != ENOENT) existing = 1;
       }
+      /* utc.identity is authoritative for the agent, so only the instance
+       * lock holder may stamp it. Cores that have not won the lock defer the
+       * write to the first poll that holds it; the disclose-only status
+       * bootstraps the agent until then. */
+      s->identity_pending = !existing;
       if (existing && take_lock(s)) goto failure; }
     { unsigned char random[16]; int fd = open("/dev/urandom", O_RDONLY);
       if (fd < 0) goto failure;
       if (read(fd, random, sizeof(random)) != sizeof(random)) { close(fd); goto failure; }
       close(fd); hex(random, sizeof(random), s->boot_id); }
-    update_identity(s, buffer);
 #endif
     for (i = 0; i < 4; ++i) {
         char name[32], scope[64], instance[64], digest[129]; int r; gnb_utc_table_t candidate;
@@ -459,6 +463,9 @@ gnb_utc_service_t *gnb_utc_service_open(const char *directory, uint64_t local_id
             if (s->table.entries[j].policy.mode == GNB_UTC_EXPORT) goto failure;
     }
     if (recovered) { s->managed = 1; strcpy(s->reason, "RECOVERED_BLOCKED"); }
+#ifndef _WIN32
+    if (s->lock_fd >= 0) update_identity(s, buffer);
+#endif
     free(buffer);
     gnb_utc_service_poll(s); /* Invalid initial config must not become default direct. */
     if (!s->managed && strcmp(s->reason, "NEVER_ENABLED")) { gnb_utc_service_close(s); return NULL; }
@@ -487,6 +494,12 @@ int gnb_utc_service_poll(gnb_utc_service_t *s) {
      * activation; the never-enabled branch below writes disclose-only status. */
     if (r != 1 && take_lock(s)) {
         strcpy(s->reason, "WRITER_CONFLICT"); free(buffer); return -1;
+    }
+    if (r != 1 && s->identity_pending) {
+        /* This core just became the authoritative writer: stamp the identity
+         * the agent binds to, superseding any never-enabled peer's status. */
+        char *scratch = malloc(GNB_UTC_TEXT_MAX);
+        if (scratch) { update_identity(s, scratch); free(scratch); s->identity_pending = 0; }
     }
     if (r == 1) {
         if (s->managed) { block_exports(&s->table); strcpy(s->reason, "CONFIG_MISSING"); }
