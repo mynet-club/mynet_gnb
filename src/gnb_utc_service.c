@@ -230,7 +230,10 @@ static int hub_peer_policy(const gnb_utc_hub_peer_t *peer, uint64_t now, uint64_
     policy->pair_gen = peer->pair_gen;
     policy->lease_epoch = peer->lease_epoch;
     policy->placement_epoch = peer->placement_epoch;
-    policy->mode = peer->mode == 1 ? GNB_UTC_EXPORT : GNB_UTC_DIRECT;
+    /* mode 1 (A-S remote target) and mode 2 (A-D local client) share the export
+     * data path: both send UDP to the given endpoint. The projection keeps the
+     * provenance; the persisted policy table keeps the historical 0/1 modes. */
+    policy->mode = peer->mode == GNB_UTC_HUB_MODE_DIRECT ? GNB_UTC_DIRECT : GNB_UTC_EXPORT;
     policy->expires_at = peer->expires_at;
     policy->endpoint.family = peer->family;
     policy->endpoint.port = peer->port;

@@ -408,6 +408,8 @@ peer <peer-uuid> <pair-id> <pair-gen> <mode> <expires-at> <family> <address-32he
 
 ### utc-v2 水位与续约
 
+`utc-v2` 的 peer `mode` 为 0=显式 direct，1=A-S（端点来自签名 TargetBinding 的远端 UDP 目标），2=A-D（peer 把 UDP 发给本机 utcd client 的每 pair 回环监听）。mode 2 必须携带非零 `expires_at`/`port`/`family`（4/6），端点只能是回环地址（IPv4 `::ffff:127.0.0.0/8`、IPv6 `::1`，`scope_id` 为零），manifest 仍是授权 TargetBinding 摘要；非回环、零端口、零有效期、IPv6 scope 非零或未知 mode 拒绝整份投影。mode 2 与 mode 1 共用 export 数据路径，持久策略表仍只存 0/1；两者切换因授权摘要不同须升 `pair_gen`。
+
 `utc-v2` 的每个 peer 携带 `lease_epoch`/`placement_epoch`，GNB 将其与 `pair_gen` 一起存入本地策略表和持久状态，作为每 peer 的单调水位。同 `pair_gen` 的内容变化只在纯续约时允许：`pair_id`/`mode`/`family`/`address`/`port`/`scope_id`/`digest` 必须与现有行逐字段相同，且 `expires_at`、`lease_epoch`、`placement_epoch` 均不得回退。普通 RENEW（`rotate=false`）保持两个 epoch 不变、只延长 `expires_at`，同样接受；epoch 前进也接受。身份字段任一变化报 GENERATION_CONFLICT，必须升 `pair_gen`（ADR-0005）。任一水位（过期时间或 epoch）回退报 VERSION_REWIND；`config_gen` 未变的重复投影仍仅对完全相同的字段幂等。**续约只推进水位，不解除已锁存阻断**；恢复后的 export 仍需更大 `pair_gen` 的显式投影才能转发。`pair_gen` 增大仍按原规则允许完整策略变更；本轮不额外施加跨代 epoch 检查。
 
 `utc-v1` 无 epoch 字段，其记录按原有规则解码为 epoch 0；同 `pair_gen` 的内容变化保持原 GENERATION_CONFLICT 语义，不因本次扩展而放宽。

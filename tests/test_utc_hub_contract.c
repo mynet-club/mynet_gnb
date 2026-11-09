@@ -64,6 +64,68 @@ int main(void) {
     assert(parsed.peers[0].peer_id == 20 && parsed.peers[1].peer_id == 30);
     puts("PASS utc-v2 peer ordering is canonical");
 
+    /* A-D rows export to the local utcd client; only a loopback listener is a
+     * valid projection target. Both IPv4-mapped and plain IPv6 loopback work. */
+    sample_projection(&projection);
+    projection.peers[0].mode = 2;
+    memset(projection.peers[0].address, 0, 16);
+    projection.peers[0].address[10] = 0xff;
+    projection.peers[0].address[11] = 0xff;
+    projection.peers[0].address[12] = 127;
+    projection.peers[0].address[15] = 1;
+    projection.peers[0].port = 14001;
+    assert(gnb_utc_hub_format(&projection, text, sizeof(text), &length) == 0);
+    assert(gnb_utc_hub_parse(text, length, &parsed, error, sizeof(error)) == 0);
+    assert(parsed.peers[0].mode == 2 && parsed.peers[0].port == 14001);
+    sample_projection(&projection);
+    projection.peers[0].mode = 2;
+    projection.peers[0].family = 6;
+    memset(projection.peers[0].address, 0, 16);
+    projection.peers[0].address[15] = 1;
+    projection.peers[0].port = 14001;
+    assert(gnb_utc_hub_format(&projection, text, sizeof(text), &length) == 0);
+    assert(gnb_utc_hub_parse(text, length, &parsed, error, sizeof(error)) == 0);
+    puts("PASS utc-v2 A-D mode requires a loopback client endpoint");
+
+    /* Invalid A-D rows: remote target, zero port/expiry, IPv6 scope, mode 3. */
+    sample_projection(&projection);
+    projection.peers[0].mode = 2;
+    projection.peers[0].port = 14001;
+    assert(gnb_utc_hub_format(&projection, text, sizeof(text), &length) != 0);
+    sample_projection(&projection);
+    projection.peers[0].mode = 2;
+    memset(projection.peers[0].address, 0, 16);
+    projection.peers[0].address[10] = 0xff;
+    projection.peers[0].address[11] = 0xff;
+    projection.peers[0].address[12] = 127;
+    projection.peers[0].address[15] = 1;
+    projection.peers[0].port = 0;
+    assert(gnb_utc_hub_format(&projection, text, sizeof(text), &length) != 0);
+    sample_projection(&projection);
+    projection.peers[0].mode = 2;
+    memset(projection.peers[0].address, 0, 16);
+    projection.peers[0].address[10] = 0xff;
+    projection.peers[0].address[11] = 0xff;
+    projection.peers[0].address[12] = 127;
+    projection.peers[0].address[15] = 1;
+    projection.peers[0].port = 14001;
+    projection.peers[0].expires_at = 0;
+    assert(gnb_utc_hub_format(&projection, text, sizeof(text), &length) != 0);
+    sample_projection(&projection);
+    projection.peers[0].mode = 2;
+    memset(projection.peers[0].address, 0, 16);
+    projection.peers[0].address[10] = 0xff;
+    projection.peers[0].address[11] = 0xff;
+    projection.peers[0].address[12] = 127;
+    projection.peers[0].address[15] = 1;
+    projection.peers[0].port = 14001;
+    projection.peers[0].scope_id = 1;
+    assert(gnb_utc_hub_format(&projection, text, sizeof(text), &length) != 0);
+    sample_projection(&projection);
+    projection.peers[0].mode = 3;
+    assert(gnb_utc_hub_format(&projection, text, sizeof(text), &length) != 0);
+    puts("PASS utc-v2 rejects invalid A-D endpoints and unknown modes");
+
     sample_projection(&projection);
     projection.peers[0].mode = 0;
     assert(gnb_utc_hub_format(&projection, text, sizeof(text), &length) != 0);

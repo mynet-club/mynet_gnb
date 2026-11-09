@@ -212,6 +212,27 @@ int main(void) {
     assert(route(s, 7, &endpoint) == GNB_UTC_FORWARD);
     assert(endpoint.port == 9666 && endpoint.address[3] == 8);
     status_gen(s, 4);
+
+    /* A-D mode names the local utcd client's loopback listener. The persisted
+     * policy stays the historical export mode and routes to that endpoint. */
+    peer_row(row, sizeof(row), 7, 8, 4, 2, 4, 4, expires, 4,
+             "00000000000000000000ffff7f000001", 14001, 0);
+    peer_row(peer9, sizeof(peer9), 9, 10, 1, 0, 1, 1, 0, 0, address0, 0, 0);
+    snprintf(rows, sizeof(rows), "%s%s", row, peer9);
+    v2_text(text, sizeof(text), "hub.scope", "hub-instance", 42, 5, boot, s->process_id, 3, rows);
+    write_text("utc.conf", text); assert(!poll(s)); assert(s->table.config_gen == 5);
+    assert(route(s, 7, &endpoint) == GNB_UTC_FORWARD);
+    assert(endpoint.family == 4 && endpoint.port == 14001 &&
+           endpoint.address[0] == 127 && endpoint.address[3] == 1);
+    assert(!memcmp(endpoint.address + 4, zero, 12));
+    status_gen(s, 5); status_contains("policy 7 8 4 1 ");
+
+    /* A-D must never name a remote target. */
+    peer_row(row, sizeof(row), 7, 8, 5, 2, 5, 5, expires, 4, address4_alt, 14001, 0);
+    peer_row(peer9, sizeof(peer9), 9, 10, 1, 0, 1, 1, 0, 0, address0, 0, 0);
+    snprintf(rows, sizeof(rows), "%s%s", row, peer9);
+    v2_text(text, sizeof(text), "hub.scope", "hub-instance", 42, 6, boot, s->process_id, 3, rows);
+    rejected(s, text, "CONFIG_INVALID", 14001);
     gnb_utc_service_close(s);
     cleanup(directory);
 

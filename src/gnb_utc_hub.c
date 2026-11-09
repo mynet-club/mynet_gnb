@@ -76,6 +76,22 @@ static int direct_address_zero(const uint8_t address[16]) {
     return 1;
 }
 
+/* A-D peers export to the local utcd client only. The projection endpoint is
+ * not signed remote target: it is the per-pair loopback UDP listener, so the
+ * address must prove local delivery and cannot be reused as a remote export. */
+static int loopback_endpoint(const gnb_utc_hub_peer_t *peer) {
+    size_t i;
+    if (peer->scope_id) return 0;
+    if (peer->family == 4) {
+        for (i = 0; i < 10; ++i) if (peer->address[i]) return 0;
+        return peer->address[10] == 0xff && peer->address[11] == 0xff &&
+               peer->address[12] == 127;
+    }
+    if (peer->family != 6) return 0;
+    for (i = 0; i < 15; ++i) if (peer->address[i]) return 0;
+    return peer->address[15] == 1;
+}
+
 static int peer_valid(const gnb_utc_hub_peer_t *peer, uint64_t local_id) {
     uint8_t manifest[32];
     size_t i;
@@ -83,10 +99,12 @@ static int peer_valid(const gnb_utc_hub_peer_t *peer, uint64_t local_id) {
         !peer->pair_gen || !peer->lease_epoch || !peer->placement_epoch ||
         decode_hex(peer->manifest, manifest, sizeof(manifest)))
         return 0;
-    if (peer->mode == 0)
+    if (peer->mode == GNB_UTC_HUB_MODE_DIRECT)
         return peer->family == 0 && peer->port == 0 && peer->scope_id == 0 &&
                direct_address_zero(peer->address);
-    if (peer->mode != 1 || !peer->expires_at || !peer->port ||
+    if (peer->mode == GNB_UTC_HUB_MODE_AD)
+        return peer->expires_at && peer->port && loopback_endpoint(peer);
+    if (peer->mode != GNB_UTC_HUB_MODE_AS || !peer->expires_at || !peer->port ||
         (peer->family != 4 && peer->family != 6))
         return 0;
     if (peer->family == 4) {

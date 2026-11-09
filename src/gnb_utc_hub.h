@@ -11,6 +11,12 @@
 #define GNB_UTC_HUB_CAP_EXPLICIT_ACTIVATE 0x2U
 #define GNB_UTC_HUB_CAP_MASK 0x3U
 
+/* Peer projection modes. 0/1 are the historical direct/A-S values; 2 is A-D,
+ * which exports to the local utcd client's per-pair loopback listener. */
+#define GNB_UTC_HUB_MODE_DIRECT 0
+#define GNB_UTC_HUB_MODE_AS 1
+#define GNB_UTC_HUB_MODE_AD 2
+
 typedef struct {
     uint64_t peer_id, pair_id, pair_gen, lease_epoch, placement_epoch, expires_at;
     uint8_t mode, family, address[16];
