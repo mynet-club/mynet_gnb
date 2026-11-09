@@ -5,6 +5,8 @@
  * protocol: checksummed intent + three full-state replicas, durable before activate.
  * Windows activation deliberately fails until equivalent durable I/O exists. */
 #include "gnb_utc_service.h"
+#include "gnb_utc_hub.h"
+#include "gnb_utc_hub_exec.h"
 #include "ed25519/sha512.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -193,11 +195,77 @@ static int emit_record(char *b, size_t *used, const char *type, const gnb_utc_po
         type, p->peer_id, p->pair_id, p->pair_gen, (unsigned)p->mode, p->expires_at,
         p->endpoint.family, address, p->endpoint.port, p->endpoint.scope_id, digest);
 }
-/* Decode config into a fresh table; all syntax and policy checks precede commit. */
+/* utc-v2 writes IPv4 endpoints in the canonical ::ffff: layout; the local
+ * policy table keeps the address in the first four bytes with zero padding. */
+static int hub_peer_policy(const gnb_utc_hub_peer_t *peer, uint64_t now, uint64_t tick,
+                           gnb_utc_policy_t *policy) {
+    uint64_t remaining;
+    memset(policy, 0, sizeof(*policy));
+    if (!tick || unhex(peer->manifest, policy->digest, GNB_UTC_DIGEST_SIZE)) return -1;
+    policy->peer_id = peer->peer_id;
+    policy->pair_id = peer->pair_id;
+    policy->pair_gen = peer->pair_gen;
+    policy->mode = peer->mode == 1 ? GNB_UTC_EXPORT : GNB_UTC_DIRECT;
+    policy->expires_at = peer->expires_at;
+    policy->endpoint.family = peer->family;
+    policy->endpoint.port = peer->port;
+    policy->endpoint.scope_id = peer->scope_id;
+    if (peer->family == 4) memcpy(policy->endpoint.address, peer->address + 12, 4);
+    else memcpy(policy->endpoint.address, peer->address, sizeof(policy->endpoint.address));
+    if (policy->mode == GNB_UTC_EXPORT) {
+        remaining = peer->expires_at > now ? peer->expires_at - now : 0;
+        if (remaining > UINT64_MAX - tick) return -1;
+        policy->deadline_tick = remaining ? tick + remaining : tick;
+    }
+    return 0;
+}
+/* utc-v2 is the Hub projection of one whole node: every peer in the file is
+ * applied and a peer dropped from it is blocked exactly like a v1 omission.
+ * The projection must be bound to this running service (boot/PID) and this
+ * instance/local node; any mismatch or apply failure leaves the live table
+ * untouched because all work happens on the caller's candidate table. */
+static int config_v2(gnb_utc_service_t *s, char *text, gnb_utc_table_t *next,
+                     char scope[64], char instance[64]) {
+    gnb_utc_hub_projection_t projection;
+    gnb_utc_hub_exec_t exec;
+    gnb_utc_policy_t current[GNB_UTC_MAX_PEERS], updates[GNB_UTC_MAX_PEERS];
+    uint8_t blocked[GNB_UTC_MAX_PEERS];
+    char error[64];
+    size_t i, j, count, current_count = 0;
+    uint64_t now = time(NULL), tick = ticks();
+    if (gnb_utc_hub_parse(text, strlen(text), &projection, error, sizeof(error))) return -1;
+    if (projection.local_id != s->local_id || strcmp(projection.boot_id, s->boot_id) ||
+        projection.process_id != s->process_id) return -1;
+    strcpy(scope, projection.scope); strcpy(instance, projection.instance);
+    if (s->managed && (strcmp(s->scope, scope) || strcmp(s->instance, instance))) return GNB_UTC_SCOPE;
+    for (i = 0; i < projection.count; ++i) {
+        if (hub_peer_policy(&projection.peers[i], now, tick, updates + i)) return -1;
+        if (updates[i].mode == GNB_UTC_EXPORT &&
+            (s->ur_server || !(s->address_families & (updates[i].endpoint.family == 4 ? 1u : 2u))))
+            return GNB_UTC_UNSUPPORTED;
+        blocked[i] = 0;
+    }
+    count = projection.count;
+    if (gnb_utc_snapshot(next, current, GNB_UTC_MAX_PEERS, &current_count)) return GNB_UTC_CAPACITY;
+    for (j = 0; j < current_count; ++j) {
+        for (i = 0; i < count; ++i) if (updates[i].peer_id == current[j].peer_id) break;
+        if (i < count) continue;
+        if (count == GNB_UTC_HUB_EXEC_MAX) return GNB_UTC_CAPACITY;
+        updates[count] = current[j]; blocked[count] = 1; ++count;
+    }
+    gnb_utc_hub_exec_init(&exec);
+    return gnb_utc_hub_exec_apply(next, &exec, projection.config_gen, updates, blocked, count);
+}
+/* Decode config into a fresh table; all syntax and policy checks precede commit.
+ * utc-v1 keeps its original grammar and ordering rules byte for byte. */
 static int config(gnb_utc_service_t *s, char *text, gnb_utc_table_t *next, char scope[64], char instance[64]) {
     char *line, *save, *v[12]; uint64_t local, gen; int n; size_t count = 0;
     gnb_utc_policy_t policies[GNB_UTC_MAX_PEERS];
     uint64_t now = time(NULL), tick = ticks();
+    size_t version = strcspn(text, " \t\r\n");
+    /* Version dispatch precedes tokenisation so v2 keeps the exact file bytes
+     * its canonical round-trip check needs. */
+    if (version == 6 && !memcmp(text, "utc-v2", 6)) return config_v2(s, text, next, scope, instance);
     line = strtok_r(text, "\n", &save); if (!line) return -1;
     n = split(line, v, 12);
     if (n != 5 || strcmp(v[0], "utc-v1") || !token(v[1]) || !token(v[2]) ||
@@ -384,13 +452,20 @@ int gnb_utc_service_poll(gnb_utc_service_t *s) {
     if (s->fault) { strcpy(s->reason, "RECOVERY_REQUIRED"); goto report; }
     r = read_file(s, "utc.conf", buffer);
     /* Two never-enabled cores can exist before the first file appears. Only
-     * the winner of the instance lock may write status or prepare activation. */
+     * the winner of the instance lock may report managed state or prepare
+     * activation; the never-enabled branch below writes disclose-only status. */
     if (r != 1 && take_lock(s)) {
         strcpy(s->reason, "WRITER_CONFLICT"); free(buffer); return -1;
     }
     if (r == 1) {
         if (s->managed) { block_exports(&s->table); strcpy(s->reason, "CONFIG_MISSING"); }
-        else { free(buffer); return 0; }
+        else {
+            /* Never-enabled disclose-only status: the agent must learn this
+             * boot/PID before it can publish an identity-bound utc-v2. This
+             * core is not an authoritative managed writer yet, so failure is
+             * ignored and routing stays native. */
+            status(s, buffer); free(buffer); return 0;
+        }
         goto report;
     }
     if (r) { strcpy(s->reason, "CONFIG_INVALID"); goto report; }
