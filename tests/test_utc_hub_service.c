@@ -14,6 +14,13 @@
 
 static char directory[1024];
 static char manifest[65];
+static void fresh_directory(char *template, size_t capacity) {
+    /* mkdtemp rewrites the template in place and glibc rejects a template
+     * without the trailing XXXXXX, so reset it for every case. */
+    snprintf(template, capacity, "/tmp/gnb-utc-hub-service-XXXXXX");
+    assert(mkdtemp(template));
+    strcpy(directory, template);
+}
 static void name(const char *suffix, char file[1200]) { snprintf(file, 1200, "%s/%s", directory, suffix); }
 static void write_text(const char *suffix, const char *text) {
     char file[1200]; FILE *f; name(suffix, file); f = fopen(file, "w"); assert(f);
@@ -99,7 +106,7 @@ int main(void) {
     static const uint8_t zero[12] = {0};
 
     memset(manifest, 'a', 64); manifest[64] = 0;
-    assert(mkdtemp(template)); strcpy(directory, template);
+    fresh_directory(template, sizeof(template));
     s = gnb_utc_service_open(directory, 42, 1); assert(s); assert(!s->managed);
     strcpy(boot, s->boot_id);
     status_contains(boot); /* never-enabled status exposes boot/PID for v2 binding */
@@ -237,7 +244,7 @@ int main(void) {
     cleanup(directory);
 
     /* Export peers need a locally enabled family; a v2 cannot bypass it. */
-    assert(mkdtemp(template)); strcpy(directory, template);
+    fresh_directory(template, sizeof(template));
     s = gnb_utc_service_open(directory, 42, 1); assert(s);
     strcpy(boot, s->boot_id);
     peer_row(row, sizeof(row), 7, 8, 1, 1, 1, 1, expires, 6, address6, 9443, 0);
@@ -247,7 +254,7 @@ int main(void) {
     gnb_utc_service_close(s);
     cleanup(directory);
 
-    assert(mkdtemp(template)); strcpy(directory, template);
+    fresh_directory(template, sizeof(template));
     s = gnb_utc_service_open(directory, 42, 1 | GNB_UTC_UR_SERVER); assert(s);
     strcpy(boot, s->boot_id);
     peer_row(row, sizeof(row), 7, 8, 1, 1, 1, 1, expires, 4, address4, 9443, 0);
