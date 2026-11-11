@@ -37,6 +37,7 @@ typedef struct {
     gnb_utc_policy_t policy;
     int blocked;              /* irreversible until an explicit newer policy */
     uint64_t tx_bytes;        /* per-peer successful sendto bytes, current boot */
+    uint64_t rx_bytes;        /* per-peer accepted FORWARD bytes (native excluded) */
 } gnb_utc_entry_t;
 /* One table per node instance/scope. Never share across cores or instances.
  * Owner must stop all users before destroy. Do not copy a live table. */
@@ -92,4 +93,9 @@ int gnb_utc_send(struct _gnb_core_t *core, uint64_t peer, const void *bytes, siz
 gnb_utc_action_t gnb_utc_action(struct _gnb_core_t *core, uint64_t peer);
 int gnb_utc_frame_valid(const void *bytes, size_t size);
 int gnb_utc_receive(struct _gnb_core_t *core, uint64_t peer, const struct _gnb_sockaddress_t *source);
+/* Same, accounting `size` accepted payload bytes for the peer. The legacy
+ * wrapper above counts presence only and keeps its historical signature. */
+int gnb_utc_receive_sized(struct _gnb_core_t *core, uint64_t peer,
+                          const struct _gnb_sockaddress_t *source,
+                          uint64_t size);
 #endif

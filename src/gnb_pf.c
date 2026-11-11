@@ -597,7 +597,7 @@ void gnb_pf_inet(gnb_core_t *gnb_core, gnb_pf_core_t *pf_core, gnb_payload16_t *
             break;
         }
     }
-    if (pf_ctx_st.src_node && !gnb_utc_receive(gnb_core, pf_ctx_st.src_node->uuid64, source_node_addr))
+    if (pf_ctx_st.src_node && !gnb_utc_receive_sized(gnb_core, pf_ctx_st.src_node->uuid64, source_node_addr, gnb_payload16_size(payload)))
         goto pf_inet_finish;
     fwd_uuid64 = NULL!=pf_ctx_st.fwd_node ? pf_ctx_st.fwd_node->uuid64:0;
     if ( NULL == pf_ctx_st.src_node ) {

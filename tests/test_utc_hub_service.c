@@ -118,7 +118,7 @@ int main(void) {
     assert(route(s, 7, &endpoint) == GNB_UTC_FORWARD);
     assert(endpoint.port == 9000 && endpoint.address[0] == 127 && endpoint.address[3] == 1);
     status_gen(s, 1); status_contains("policy 7 8 1 1 ");
-    status_contains("usage 7 0");
+    status_contains("usage 7 0 0");
 
     peer_row(row, sizeof(row), 7, 8, 2, 1, 2, 2, expires, 4, address4, 9555, 0);
     v2_text(text, sizeof(text), "hub.scope", "hub-instance", 42, 2, "00000000000000000000000000000000",

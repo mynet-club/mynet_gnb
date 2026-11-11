@@ -77,10 +77,10 @@ int main(void) {
         memset(&source, 0, sizeof(source)); source.addr_type = AF_INET;
         source.addr.in = address;
         assert(gnb_utc_action(&core, 7) == GNB_UTC_FORWARD);
-        assert(gnb_utc_receive(&core, 7, &source));
+        assert(gnb_utc_receive_sized(&core, 7, &source, sizeof(packet)));
         source.addr.in.sin_port = htons(ntohs(address.sin_port) + 1);
-        assert(!gnb_utc_receive(&core, 7, &source));
-        assert(gnb_utc_receive(&core, 9, &source));
+        assert(!gnb_utc_receive_sized(&core, 7, &source, sizeof(packet)));
+        assert(gnb_utc_receive_sized(&core, 9, &source, sizeof(packet)));
     }
     assert(gnb_utc_send(&core, 7, packet, sizeof(packet)) == 1);
     assert(recv(receiver, received, sizeof(received), 0) == sizeof(packet));
@@ -113,8 +113,8 @@ int main(void) {
         assert(recv(receiver6, received, sizeof(received), 0) == sizeof(packet));
         assert(!memcmp(received, packet, sizeof(packet)));
         memset(&source6, 0, sizeof(source6)); source6.addr_type = AF_INET6; source6.addr.in6 = address6;
-        assert(gnb_utc_receive(&core, 7, &source6));
-        ++source6.addr.in6.sin6_scope_id; assert(!gnb_utc_receive(&core, 7, &source6));
+        assert(gnb_utc_receive_sized(&core, 7, &source6, sizeof(packet)));
+        ++source6.addr.in6.sin6_scope_id; assert(!gnb_utc_receive_sized(&core, 7, &source6, sizeof(packet)));
         close(core.udp_ipv6_sockets[0]); close(receiver6);
     }
     assert(!gnb_utc_apply(&table, 3, NULL, 0));
@@ -127,6 +127,7 @@ int main(void) {
             if (table.entries[i].policy.peer_id != 7) continue;
             found = 1;
             assert(table.entries[i].tx_bytes == 2U * sizeof(packet));
+            assert(table.entries[i].rx_bytes == 2U * sizeof(packet));
         }
         assert(found);
     }

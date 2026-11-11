@@ -229,7 +229,7 @@ static void handle_ping_frame(gnb_core_t *gnb_core, gnb_worker_in_data_t *node_w
         GNB_LOG3(gnb_core->log, GNB_LOG_ID_NODE_WORKER, "handle_ping_frame error node=%llu is miss\n", src_uuid64);
         return;
     }
-    if (!gnb_utc_receive(gnb_core, src_uuid64, &node_worker_in_data->node_addr_st)) return;
+    if (!gnb_utc_receive_sized(gnb_core, src_uuid64, &node_worker_in_data->node_addr_st, gnb_payload16_size(&node_worker_in_data->payload_st))) return;
     if ( src_node->type & GNB_NODE_TYPE_SLIENCE ) {
         return;
     }
@@ -361,7 +361,7 @@ static void handle_pong_frame(gnb_core_t *gnb_core, gnb_worker_in_data_t *node_w
         GNB_LOG3(gnb_core->log,GNB_LOG_ID_NODE_WORKER, "handle_pong_frame error node=%llu is miss\n", src_uuid64);
         return;
     }
-    if (!gnb_utc_receive(gnb_core, src_uuid64, &node_worker_in_data->node_addr_st)) return;
+    if (!gnb_utc_receive_sized(gnb_core, src_uuid64, &node_worker_in_data->node_addr_st, gnb_payload16_size(&node_worker_in_data->payload_st))) return;
     if ( src_node->type & GNB_NODE_TYPE_SLIENCE ) {
         return;
     }

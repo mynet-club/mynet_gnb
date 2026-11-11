@@ -249,12 +249,27 @@ static void count_tx(gnb_core_t *core, uint64_t peer, size_t size, int blocked,
     }
     pthread_mutex_unlock(&core->utc_policy->lock);
 }
-static int count_rx(gnb_core_t *core, int accepted) {
+static int count_rx(gnb_core_t *core, uint64_t peer, uint64_t size,
+                    int accepted) {
+    size_t i;
     if (!accepted) {
         pthread_mutex_lock(&core->utc_policy->lock);
         ++core->utc_policy->rx_dropped;
         pthread_mutex_unlock(&core->utc_policy->lock);
+        return accepted;
     }
+    if (size == 0U) return accepted;
+    pthread_mutex_lock(&core->utc_policy->lock);
+    for (i = 0; i < core->utc_policy->count; ++i) {
+        gnb_utc_entry_t *entry = &core->utc_policy->entries[i];
+        if (entry->policy.peer_id != peer) continue;
+        if (size > UINT64_MAX - entry->rx_bytes)
+            entry->rx_bytes = UINT64_MAX;
+        else
+            entry->rx_bytes += size;
+        break;
+    }
+    pthread_mutex_unlock(&core->utc_policy->lock);
     return accepted;
 }
 int gnb_utc_send(gnb_core_t *core, uint64_t peer, const void *bytes, size_t size) {
@@ -299,8 +314,15 @@ int gnb_utc_send(gnb_core_t *core, uint64_t peer, const void *bytes, size_t size
     return 1;
 }
 
-int gnb_utc_receive(gnb_core_t *core, uint64_t peer, const gnb_sockaddress_t *source) {
+int gnb_utc_receive(gnb_core_t *core, uint64_t peer,
+                    const gnb_sockaddress_t *source) {
+    return gnb_utc_receive_sized(core, peer, source, 0);
+}
+
+int gnb_utc_receive_sized(gnb_core_t *core, uint64_t peer,
+                          const gnb_sockaddress_t *source, uint64_t size) {
     gnb_utc_endpoint_t endpoint;
+    gnb_utc_endpoint_t incoming;
     uint64_t tick;
     if (!core || !source) return 0;
     if (!core->utc_policy) return 1;
@@ -311,16 +333,25 @@ int gnb_utc_receive(gnb_core_t *core, uint64_t peer, const gnb_sockaddress_t *so
     if (clock_gettime(CLOCK_MONOTONIC, &ts)) return 0;
     tick = (uint64_t)ts.tv_sec;
 #endif
-    memset(&endpoint, 0, sizeof(endpoint));
+    memset(&incoming, 0, sizeof(incoming));
     if (source->addr_type == AF_INET) {
-        endpoint.family = 4; endpoint.port = ntohs(source->addr.in.sin_port);
-        memcpy(endpoint.address, &source->addr.in.sin_addr, 4);
+        incoming.family = 4; incoming.port = ntohs(source->addr.in.sin_port);
+        memcpy(incoming.address, &source->addr.in.sin_addr, 4);
     } else if (source->addr_type == AF_INET6) {
-        endpoint.family = 6; endpoint.port = ntohs(source->addr.in6.sin6_port);
-        endpoint.scope_id = source->addr.in6.sin6_scope_id;
-        memcpy(endpoint.address, &source->addr.in6.sin6_addr, 16);
-    } else return count_rx(core, 0);
-    return count_rx(core, gnb_utc_accept(core->utc_policy, peer, &endpoint, (uint64_t)time(NULL), tick));
+        incoming.family = 6; incoming.port = ntohs(source->addr.in6.sin6_port);
+        incoming.scope_id = source->addr.in6.sin6_scope_id;
+        memcpy(incoming.address, &source->addr.in6.sin6_addr, 16);
+    } else return count_rx(core, peer, 0, 0);
+    {
+        gnb_utc_action_t action =
+            gnb_utc_route(core->utc_policy, peer, (uint64_t)time(NULL), tick,
+                          &endpoint);
+        if (action == GNB_UTC_NATIVE) return count_rx(core, peer, 0, 1);
+        if (action != GNB_UTC_FORWARD ||
+            !endpoint_equal(&incoming, &endpoint))
+            return count_rx(core, peer, 0, 0);
+    }
+    return count_rx(core, peer, size, 1);
 }
 
 gnb_utc_action_t gnb_utc_action(gnb_core_t *core, uint64_t peer) {

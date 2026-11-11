@@ -193,7 +193,7 @@ int gnb_unified_forwarding_inet(gnb_core_t *gnb_core, gnb_payload16_t *payload, 
         return UNIFIED_FORWARDING_ERROR;
     }
     dst_nodeid = gnb_ntohll(unified_forwarding_frame_foot->dst_nodeid);
-    if (!gnb_utc_receive(gnb_core, src_nodeid, source)) return UNIFIED_FORWARDING_DROP;
+    if (!gnb_utc_receive_sized(gnb_core, src_nodeid, source, in_payload_size)) return UNIFIED_FORWARDING_DROP;
     dst_node   = GNB_HASH32_UINT64_GET_PTR(gnb_core->uuid_node_map, dst_nodeid);
     unified_forwarding_nodeid = gnb_ntohll(unified_forwarding_frame_foot->unified_forwarding_nodeid);
     if ( NULL == dst_node ) {
@@ -243,7 +243,7 @@ int gnb_unified_forwarding_multi_path_inet(gnb_core_t *gnb_core, gnb_payload16_t
         return UNIFIED_FORWARDING_ERROR;
     }
     dst_nodeid = gnb_ntohll(unified_forwarding_frame_foot->dst_nodeid);
-    if (!gnb_utc_receive(gnb_core, src_nodeid, source)) return UNIFIED_FORWARDING_DROP;
+    if (!gnb_utc_receive_sized(gnb_core, src_nodeid, source, in_payload_size)) return UNIFIED_FORWARDING_DROP;
     dst_node   = GNB_HASH32_UINT64_GET_PTR(gnb_core->uuid_node_map, dst_nodeid);
     unified_forwarding_nodeid = gnb_ntohll(unified_forwarding_frame_foot->unified_forwarding_nodeid);
     if ( NULL == dst_node ) {
