@@ -227,11 +227,26 @@ int gnb_utc_accept(gnb_utc_table_t *t, uint64_t peer,
 #include <string.h>
 #include <time.h>
 
-static void count_tx(gnb_core_t *core, int blocked, int error) {
+static void count_tx(gnb_core_t *core, uint64_t peer, size_t size, int blocked,
+                     int error) {
+    size_t i;
     pthread_mutex_lock(&core->utc_policy->lock);
-    if (blocked) ++core->utc_policy->tx_blocked;
-    else if (error) ++core->utc_policy->tx_errors;
-    else ++core->utc_policy->tx_packets;
+    if (blocked) {
+        ++core->utc_policy->tx_blocked;
+    } else if (error) {
+        ++core->utc_policy->tx_errors;
+    } else {
+        ++core->utc_policy->tx_packets;
+        for (i = 0; i < core->utc_policy->count; ++i) {
+            gnb_utc_entry_t *entry = &core->utc_policy->entries[i];
+            if (entry->policy.peer_id != peer) continue;
+            if (size > UINT64_MAX - entry->tx_bytes)
+                entry->tx_bytes = UINT64_MAX;
+            else
+                entry->tx_bytes += size;
+            break;
+        }
+    }
     pthread_mutex_unlock(&core->utc_policy->lock);
 }
 static int count_rx(gnb_core_t *core, int accepted) {
@@ -259,7 +274,7 @@ int gnb_utc_send(gnb_core_t *core, uint64_t peer, const void *bytes, size_t size
 #endif
     action = gnb_utc_route(core->utc_policy, peer, (uint64_t)time(NULL), tick, &endpoint);
     if (action == GNB_UTC_NATIVE) return 0;
-    if (action == GNB_UTC_BLOCK || !core->conf) { count_tx(core, 1, 0); return 1; }
+    if (action == GNB_UTC_BLOCK || !core->conf) { count_tx(core, peer, size, 1, 0); return 1; }
     /* Select by export family, never by a learned peer socket index. A failed
      * send is handled: callers must not fall back to a direct candidate. */
     if (endpoint.family == 4 && (core->conf->udp_socket_type & GNB_ADDR_TYPE_IPV4)
@@ -280,7 +295,7 @@ int gnb_utc_send(gnb_core_t *core, uint64_t peer, const void *bytes, size_t size
         fd = core->udp_ipv6_sockets[0];
         sent = sendto(fd, bytes, size, 0, (struct sockaddr *)&address, sizeof(address));
     }
-    count_tx(core, 0, sent != (ssize_t)size);
+    count_tx(core, peer, size, 0, sent != (ssize_t)size);
     return 1;
 }
 

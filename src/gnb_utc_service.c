@@ -408,6 +408,8 @@ static int status(gnb_utc_service_t *s, char *buffer) {
         }
         if (append(buffer, &used, "peer %"PRIu64" %"PRIu64" %"PRIu64" %s %s %s %s\n", p->peer_id, p->pair_id, p->pair_gen,
             action == GNB_UTC_BLOCK ? "BLOCKED" : "APPLIED", reason, digest, local_digest)) return -1;
+        if (append(buffer, &used, "usage %"PRIu64" %"PRIu64"\n", p->peer_id,
+                   s->table.entries[i].tx_bytes)) return -1;
     }
     return write_file(s, "utc.status", buffer);
 }

@@ -36,6 +36,7 @@ typedef struct {
 typedef struct {
     gnb_utc_policy_t policy;
     int blocked;              /* irreversible until an explicit newer policy */
+    uint64_t tx_bytes;        /* per-peer successful sendto bytes, current boot */
 } gnb_utc_entry_t;
 /* One table per node instance/scope. Never share across cores or instances.
  * Owner must stop all users before destroy. Do not copy a live table. */

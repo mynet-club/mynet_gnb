@@ -120,6 +120,16 @@ int main(void) {
     assert(!gnb_utc_apply(&table, 3, NULL, 0));
     assert(gnb_utc_send(&core, 7, packet, sizeof(packet)) == 1);
     assert(table.tx_packets == 2);
+    {
+        size_t i;
+        int found = 0;
+        for (i = 0; i < table.count; ++i) {
+            if (table.entries[i].policy.peer_id != 7) continue;
+            found = 1;
+            assert(table.entries[i].tx_bytes == 2U * sizeof(packet));
+        }
+        assert(found);
+    }
     assert(table.tx_errors == 2);
     assert(table.tx_blocked == 1);
     assert(table.rx_dropped == 2);
