@@ -80,6 +80,9 @@ static void handle_request_addr_frame(gnb_core_t *gnb_core, gnb_worker_in_data_t
 
 /* verify and decrypto OK */
 static void handle_post_addr_frame(gnb_core_t *gnb_core, gnb_worker_in_data_t *index_service_worker_in_data) {
+    if ( GNB_PAYLOAD16_DATA_SIZE(&index_service_worker_in_data->payload_st) < sizeof(post_addr_frame_t) ) {
+        return;
+    }
     index_service_worker_ctx_t *index_service_worker_ctx = gnb_core->index_service_worker->ctx;
     gnb_key_address_t *key_address;
     post_addr_frame_t *post_addr_frame = (post_addr_frame_t *)&index_service_worker_in_data->payload_st.data;
@@ -303,6 +306,9 @@ finish_fill_address:
 
 /*verify and decrypto*/
 static void handle_request_addr_frame(gnb_core_t *gnb_core, gnb_worker_in_data_t *index_service_worker_in_data) {
+    if ( GNB_PAYLOAD16_DATA_SIZE(&index_service_worker_in_data->payload_st) < sizeof(request_addr_frame_t) ) {
+        return;
+    }
     index_service_worker_ctx_t *index_service_worker_ctx = gnb_core->index_service_worker->ctx;
     request_addr_frame_t *request_addr_frame = (request_addr_frame_t *)&index_service_worker_in_data->payload_st.data;
     gnb_uuid_t node_uuid64 = gnb_ntohll(request_addr_frame->node_uuid64);

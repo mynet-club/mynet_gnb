@@ -31,7 +31,6 @@
 #include <unistd.h>
 
 #include "gnb.h"
-#include "gnb_utc.h"
 #include "gnb_time.h"
 #include "gnb_keys.h"
 #include "gnb_node.h"
@@ -99,7 +98,6 @@ static void handle_uf_node_notify_frame(gnb_core_t *gnb_core, gnb_worker_in_data
     node_worker_ctx_t *node_worker_ctx = gnb_core->node_worker->ctx;
     uf_node_notify_frame_t *uf_node_notify_frame = (uf_node_notify_frame_t *)&node_worker_in_data->payload_st.data;
     gnb_uuid_t src_uuid64    = gnb_ntohll(uf_node_notify_frame->data.src_uuid64);
-    if (gnb_utc_action(gnb_core, src_uuid64) != GNB_UTC_NATIVE) return;
     gnb_uuid_t dst_uuid64    = gnb_ntohll(uf_node_notify_frame->data.dst_uuid64);
     gnb_uuid_t df_uuid64     = gnb_ntohll(uf_node_notify_frame->data.df_uuid64);
     gnb_sockaddress_t *node_addr = &node_worker_in_data->node_addr_st;
@@ -175,7 +173,6 @@ static void send_ping_frame(gnb_core_t *gnb_core, gnb_node_t *node) {
     node_worker_ctx_t *node_worker_ctx = gnb_core->node_worker->ctx;
     char address_string1[GNB_IP6_PORT_STRING_SIZE];
     char address_string2[GNB_IP6_PORT_STRING_SIZE];
-    if (gnb_utc_action(gnb_core, node->uuid64) == GNB_UTC_NATIVE) {
     if ( INADDR_ANY == node->udp_sockaddr4.sin_addr.s_addr && 0 == memcmp(&node->udp_sockaddr6.sin6_addr,&in6addr_any,sizeof(struct in6_addr)) ) {
         return;
     }
@@ -183,7 +180,6 @@ static void send_ping_frame(gnb_core_t *gnb_core, gnb_node_t *node) {
         if ( !(node->type & GNB_NODE_TYPE_IDX) && !(node->type & GNB_NODE_TYPE_FWD) && !(node->type & GNB_NODE_TYPE_RELAY) && !(node->type & GNB_NODE_TYPE_STATIC_ADDR) ) {
             return;
         }
-    }
     }
     node_worker_ctx->node_frame_payload->sub_type = PAYLOAD_SUB_TYPE_PING;
     gnb_payload16_set_data_len(node_worker_ctx->node_frame_payload, sizeof(node_ping_frame_t));
@@ -210,6 +206,9 @@ static void send_ping_frame(gnb_core_t *gnb_core, gnb_node_t *node) {
 }
 
 static void handle_ping_frame(gnb_core_t *gnb_core, gnb_worker_in_data_t *node_worker_in_data) {
+    if ( GNB_PAYLOAD16_DATA_SIZE(&node_worker_in_data->payload_st) < sizeof(node_ping_frame_t) ) {
+        return;
+    }
     gnb_worker_t *primary_worker = gnb_core->primary_worker;
     node_worker_ctx_t *node_worker_ctx = gnb_core->node_worker->ctx;
     node_ping_frame_t *node_ping_frame = (node_ping_frame_t *)&node_worker_in_data->payload_st.data;
@@ -229,7 +228,6 @@ static void handle_ping_frame(gnb_core_t *gnb_core, gnb_worker_in_data_t *node_w
         GNB_LOG3(gnb_core->log, GNB_LOG_ID_NODE_WORKER, "handle_ping_frame error node=%llu is miss\n", src_uuid64);
         return;
     }
-    if (!gnb_utc_receive_sized(gnb_core, src_uuid64, &node_worker_in_data->node_addr_st, gnb_payload16_size(&node_worker_in_data->payload_st))) return;
     if ( src_node->type & GNB_NODE_TYPE_SLIENCE ) {
         return;
     }
@@ -246,7 +244,7 @@ static void handle_ping_frame(gnb_core_t *gnb_core, gnb_worker_in_data_t *node_w
     }
     uint64_t src_ts_usec = gnb_ntohll(node_ping_frame->data.src_ts_usec);
     int64_t latency_usec = node_worker_ctx->now_time_usec - src_ts_usec;
-    if (gnb_utc_action(gnb_core, src_uuid64) == GNB_UTC_NATIVE && AF_INET6 == node_addr->addr_type) {
+    if ( AF_INET6 == node_addr->addr_type ) {
         if ( 0 != gnb_determine_subnet6_prefixlen96(node_addr->addr.in6.sin6_addr, gnb_core->local_node->tun_ipv6_addr ) ) {
             GNB_LOG3(gnb_core->log,GNB_LOG_ID_NODE_WORKER, "handle_ping_frame IPV6 Warning src[%llu]->dst[%llu] idx=%u %s\n",
                     src_node->uuid64, dst_uuid64,
@@ -273,7 +271,7 @@ static void handle_ping_frame(gnb_core_t *gnb_core, gnb_worker_in_data_t *node_w
     char address_string_buffer1[GNB_IP6_PORT_STRING_SIZE];
     //char address_string_buffer2[GNB_IP6_PORT_STRING_SIZE];
 
-    if (gnb_utc_action(gnb_core, src_uuid64) == GNB_UTC_NATIVE && AF_INET == node_addr->addr_type) {
+    if ( AF_INET == node_addr->addr_type ) {
         if ( 0 != gnb_determine_subnet4(node_addr->addr.in.sin_addr,  gnb_core->local_node->tun_addr4, gnb_core->local_node->tun_netmask_addr4) ) {
             GNB_LOG3(gnb_core->log,GNB_LOG_ID_NODE_WORKER, "handle_ping_frame IPV4 Warning src[%llu]->dst[%llu] idx=%u %s\n",
                     src_node->uuid64, dst_uuid64,
@@ -341,6 +339,9 @@ static void handle_ping_frame(gnb_core_t *gnb_core, gnb_worker_in_data_t *node_w
 }
 
 static void handle_pong_frame(gnb_core_t *gnb_core, gnb_worker_in_data_t *node_worker_in_data) {
+    if ( GNB_PAYLOAD16_DATA_SIZE(&node_worker_in_data->payload_st) < sizeof(node_pong_frame_t) ) {
+        return;
+    }
     node_worker_ctx_t *node_worker_ctx = gnb_core->node_worker->ctx;
     node_pong_frame_t *node_pong_frame = (node_pong_frame_t *)&node_worker_in_data->payload_st.data;
     gnb_uuid_t src_uuid64 = gnb_ntohll(node_pong_frame->data.src_uuid64);
@@ -361,7 +362,6 @@ static void handle_pong_frame(gnb_core_t *gnb_core, gnb_worker_in_data_t *node_w
         GNB_LOG3(gnb_core->log,GNB_LOG_ID_NODE_WORKER, "handle_pong_frame error node=%llu is miss\n", src_uuid64);
         return;
     }
-    if (!gnb_utc_receive_sized(gnb_core, src_uuid64, &node_worker_in_data->node_addr_st, gnb_payload16_size(&node_worker_in_data->payload_st))) return;
     if ( src_node->type & GNB_NODE_TYPE_SLIENCE ) {
         return;
     }
@@ -381,7 +381,7 @@ static void handle_pong_frame(gnb_core_t *gnb_core, gnb_worker_in_data_t *node_w
     } else {
         address_st.latency_usec = 1;
     }
-    if (gnb_utc_action(gnb_core, src_uuid64) == GNB_UTC_NATIVE && AF_INET6 == node_addr->addr_type) {
+    if ( AF_INET6 == node_addr->addr_type ) {
         if ( 0 != gnb_determine_subnet6_prefixlen96(node_addr->addr.in6.sin6_addr, gnb_core->local_node->tun_ipv6_addr ) ) {
             GNB_LOG3(gnb_core->log, GNB_LOG_ID_NODE_WORKER, "handle_pong_frame IPV6 Warning src[%llu]->dst[%llu] idx=%u %s\n",
                     src_node->uuid64, dst_uuid64,
@@ -416,7 +416,7 @@ static void handle_pong_frame(gnb_core_t *gnb_core, gnb_worker_in_data_t *node_w
         );
     }
 
-    if (gnb_utc_action(gnb_core, src_uuid64) == GNB_UTC_NATIVE && AF_INET == node_addr->addr_type) {
+    if ( AF_INET == node_addr->addr_type ) {
         if ( 0 != gnb_determine_subnet4(node_addr->addr.in.sin_addr,  gnb_core->local_node->tun_addr4, gnb_core->local_node->tun_netmask_addr4) ) {
             GNB_LOG3(gnb_core->log, GNB_LOG_ID_NODE_WORKER, "handle_pong_frame IPV4 Warning src[%llu]->dst[%llu] idx=%u %s\n",
                     src_node->uuid64, dst_uuid64,

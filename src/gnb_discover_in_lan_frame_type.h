@@ -40,8 +40,8 @@ typedef struct _discover_lan_in_frame_t {
     } data;
     unsigned char src_sign[ED25519_SIGN_SIZE];
 }__attribute__ ((__packed__)) discover_lan_in_frame_t;
-#pragma pack(pop)
-
 #define PAYLOAD_DISCOVER_LAN_IN_FRAME_PAYLOAD_SIZE (sizeof(gnb_payload16_t) + sizeof(discover_lan_in_frame_t))
+
+#pragma pack(pop)
 
 #endif

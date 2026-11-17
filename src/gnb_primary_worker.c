@@ -22,7 +22,6 @@
 #include <unistd.h>
 
 #include "gnb.h"
-#include "gnb_utc.h"
 
 #ifdef __UNIX_LIKE_OS__
 #include <netinet/in.h>
@@ -56,7 +55,6 @@
 #include "gnb_worker_queue_data.h"
 #include "gnb_ur1_frame_type.h"
 #include "gnb_time.h"
-//#include "gnb_udp.h"
 #include "gnb_binary.h"
 #include "crypto/xor/xor.h"
 
@@ -104,7 +102,6 @@ gnb_worker_t * select_pf_worker(gnb_core_t *gnb_core){
 }
 
 void gnb_send_ur0_frame(gnb_core_t *gnb_core, gnb_node_t *dst_node, gnb_payload16_t *payload) {
-    if (gnb_utc_action(gnb_core, dst_node->uuid64) != GNB_UTC_NATIVE) return;
     unsigned char buffer[gnb_core->conf->payload_block_size];
     gnb_payload16_t *fwd_payload = (gnb_payload16_t *)buffer;
     gnb_address_t *dst_address = gnb_select_available_address4(gnb_core, dst_node);
@@ -128,7 +125,7 @@ void gnb_send_ur0_frame(gnb_core_t *gnb_core, gnb_node_t *dst_node, gnb_payload1
     memcpy(ur0_frame_head->dst_addr4, &dst_address->m_address4, 4);
     ur0_frame_head->dst_port4 = dst_address->port;
     memcpy(ur0_frame_head->passcode, gnb_core->conf->crypto_passcode, 4);
-    uint16_t payload_size = gnb_payload16_size(payload);
+    uint16_t payload_size = GNB_PAYLOAD16_FRAME_SIZE(payload);
     memcpy(fwd_payload->data + sizeof(gnb_ur0_frame_head_t), payload, payload_size);
     gnb_payload16_set_data_len(fwd_payload, sizeof(gnb_ur0_frame_head_t) + payload_size);
     gnb_send_to_address(gnb_core, fwd_address, fwd_payload);
@@ -142,6 +139,18 @@ void gnb_send_ur0_frame(gnb_core_t *gnb_core, gnb_node_t *dst_node, gnb_payload1
 }
 
 static void handle_ur0_frame(gnb_core_t *gnb_core, gnb_payload16_t *payload, gnb_sockaddress_t *source_node_addr) {
+    uint16_t data_len = GNB_PAYLOAD16_DATA_SIZE(payload);
+    // 校验基础长度，必须足以容纳 UR0 头(10字节)与内嵌报文头(4字节)
+    if ( data_len < sizeof(gnb_ur0_frame_head_t) + GNB_PAYLOAD16_HEAD_SIZE ) {
+        return;
+    }
+    gnb_payload16_t *fwd_payload = (gnb_payload16_t *)(payload->data + sizeof(gnb_ur0_frame_head_t));
+    uint16_t fwd_payload_size = GNB_PAYLOAD16_FRAME_SIZE(fwd_payload);
+    //校验内层报文长度，避免不正确的超出实际长度的 fwd_payload_size
+    if ( fwd_payload_size < GNB_PAYLOAD16_HEAD_SIZE || fwd_payload_size > (data_len - sizeof(gnb_ur0_frame_head_t)) ) {
+        return;
+    }
+    //检查 passcode
     gnb_ur0_frame_head_t *ur0_frame_head = (gnb_ur0_frame_head_t *)payload->data;
     gnb_address_t dst_address_st;
     char address_string1[GNB_IP6_PORT_STRING_SIZE];
@@ -157,7 +166,6 @@ static void handle_ur0_frame(gnb_core_t *gnb_core, gnb_payload16_t *payload, gnb
         }
         return;
     }
-    gnb_payload16_t *fwd_payload = (gnb_payload16_t *)(payload->data + sizeof(gnb_ur0_frame_head_t));
     gnb_send_to_address(gnb_core, &dst_address_st, fwd_payload);
     if ( 1==gnb_core->conf->if_dump ) {
         GNB_LOG3(gnb_core->log, GNB_LOG_ID_MAIN_WORKER, "handle ur0 %s => %s\n",
@@ -186,7 +194,12 @@ static void handle_ur1_frame(gnb_core_t *gnb_core, gnb_payload16_t *payload, gnb
     #define GNB_UR1_SOURCE_NODE   2
     int ur1_source = GNB_UR1_SOURCE_UNSET;
     data_size = GNB_PAYLOAD16_DATA_SIZE(payload);
-    if ( data_size <= sizeof(gnb_ur1_frame_head_t) ) {
+    /*
+      UR1 载荷至少需 4 字节数据：
+      后续加密校验码 (verifycode) 需要从明文首部取 2 字节、尾部取 2 字节。
+      若低于 4 字节，计算 ur1_data[ur1_data_size-2] 会发生下溢导致负索引越界读取。
+    */
+    if ( data_size <= sizeof(gnb_ur1_frame_head_t) + 4 ) {
         GNB_LOG3(gnb_core->log, GNB_LOG_ID_MAIN_WORKER, "UR1 frame frome %s payload size error!\n",
                  gnb_sockaddress_port_str(node_addr,address_string1,gnb_core->conf->addr_secure)
         );
@@ -262,8 +275,6 @@ static void handle_ur1_frame(gnb_core_t *gnb_core, gnb_payload16_t *payload, gnb
         }
     }
     src_uuid64 = gnb_ntohll(ur1_frame_head->src_uuid64);
-    if (gnb_utc_action(gnb_core, src_uuid64) != GNB_UTC_NATIVE ||
-        gnb_utc_action(gnb_core, dst_uuid64) != GNB_UTC_NATIVE) return;
     src_node = (gnb_node_t *)GNB_HASH32_UINT64_GET_PTR(gnb_core->uuid_node_map, src_uuid64);
     if ( NULL==src_node ) {
         GNB_LOG3(gnb_core->log, GNB_LOG_ID_MAIN_WORKER, "UR1 frame frome %s payload src_node=%llu not found!\n",
@@ -344,6 +355,15 @@ static void handle_ur1_frame(gnb_core_t *gnb_core, gnb_payload16_t *payload, gnb
     //payload 转发到指定 gnb node
     if (  GNB_UR1_SOURCE_APP == ur1_source && dst_uuid64 != gnb_core->local_node->uuid64 ) {
         //第一个gnb node,执行加密
+        /*
+          verifycode 校验机制设计说明：
+          1. 异或流加密 (xor_crypto) 本身无自校验能力，用错密钥解密也会静默成功（产出乱码）。
+          2. 发送端在加密前，提取明文首 2 字节与尾 2 字节存入未加密的 verifycode[4] 作为指纹。
+          3. 接收端解密后比对指纹：
+              - 匹配成功：说明当前通信密钥 (crypto_key) 正确；
+              - 匹配失败：尝试回退到旧通信密钥 (pre_crypto_key) 再次解密复查；
+              - 两次均失败：判定为密钥不匹配或数据损坏，直接丢弃。
+        */
         ur1_frame_head->verifycode[0] = ur1_data[0];
         ur1_frame_head->verifycode[1] = ur1_data[1];
         ur1_frame_head->verifycode[2] = ur1_data[ur1_data_size-2];
@@ -381,6 +401,11 @@ static void handle_ur1_frame(gnb_core_t *gnb_core, gnb_payload16_t *payload, gnb
 }
 
 static gnb_worker_queue_data_t* make_worker_receive_queue_data(gnb_worker_t *worker, gnb_sockaddress_t *node_addr, uint8_t socket_idx, gnb_payload16_t *payload) {
+    uint16_t payload_size;
+    payload_size = GNB_PAYLOAD16_FRAME_SIZE(payload);
+    if ((sizeof(gnb_worker_queue_data_t) - GNB_PAYLOAD16_HEAD_SIZE + payload_size) > worker->ring_buffer_in->block_size) {
+        return NULL;
+    }
     gnb_worker_queue_data_t *receive_queue_data = (gnb_worker_queue_data_t *)gnb_ring_buffer_fixed_push(worker->ring_buffer_in);
     if ( NULL == receive_queue_data ) {
         return NULL;
@@ -388,17 +413,22 @@ static gnb_worker_queue_data_t* make_worker_receive_queue_data(gnb_worker_t *wor
     receive_queue_data->type = GNB_WORKER_QUEUE_DATA_TYPE_NODE_IN;
     memcpy(&receive_queue_data->data.node_in.node_addr_st, node_addr, sizeof(gnb_sockaddress_t));
     receive_queue_data->data.node_in.socket_idx = socket_idx;
-    memcpy(&receive_queue_data->data.node_in.payload_st, payload, gnb_payload16_size(payload));
+    memcpy(&receive_queue_data->data.node_in.payload_st, payload, payload_size);
     return receive_queue_data;
 }
 
 static gnb_worker_queue_data_t* make_worker_send_queue_data(gnb_worker_t *worker, gnb_payload16_t *payload) {
+    uint16_t payload_size;
+    payload_size = GNB_PAYLOAD16_FRAME_SIZE(payload);
+    if ((sizeof(gnb_worker_queue_data_t) - GNB_PAYLOAD16_HEAD_SIZE + payload_size) > worker->ring_buffer_out->block_size) {
+        return NULL;
+    }
     gnb_worker_queue_data_t *send_queue_data = (gnb_worker_queue_data_t *)gnb_ring_buffer_fixed_push(worker->ring_buffer_out);
     if ( NULL == send_queue_data ) {
         return NULL;
     }
     send_queue_data->type = GNB_WORKER_QUEUE_DATA_TYPE_NODE_OUT;
-    memcpy(&send_queue_data->data.node_in.payload_st, payload, gnb_payload16_size(payload));
+    memcpy(&send_queue_data->data.node_in.payload_st, payload, payload_size);
     return send_queue_data;
 }
 
@@ -429,12 +459,12 @@ skip_tun:
     switch (af) {
         case AF_INET6:
             node_addr_st.socklen = sizeof(struct sockaddr_in6);
-            n_recv = recvfrom(gnb_core->udp_ipv6_sockets[socket_idx], (void *)inet_payload, gnb_core->conf->payload_block_size, 0, (struct sockaddr *)&node_addr_st.addr.in6, &node_addr_st.socklen);
+            n_recv = recvfrom(gnb_core->udp_ipv6_sockets[socket_idx], (void *)inet_payload, gnb_core->conf->payload_in_block_size, 0, (struct sockaddr *)&node_addr_st.addr.in6, &node_addr_st.socklen);
             node_addr_st.addr_type = AF_INET6;
             break;
         case AF_INET:
             node_addr_st.socklen = sizeof(struct sockaddr_in);
-            n_recv = recvfrom(gnb_core->udp_ipv4_sockets[socket_idx], (void *)inet_payload, gnb_core->conf->payload_block_size, 0, (struct sockaddr *)&node_addr_st.addr.in, &node_addr_st.socklen);
+            n_recv = recvfrom(gnb_core->udp_ipv4_sockets[socket_idx], (void *)inet_payload, gnb_core->conf->payload_in_block_size, 0, (struct sockaddr *)&node_addr_st.addr.in, &node_addr_st.socklen);
             node_addr_st.addr_type = AF_INET;
             break;
         default:
@@ -442,18 +472,18 @@ skip_tun:
             break;
     }
 
-    if ( n_recv < GNB_PAYLOAD16_HEAD_SIZE ||
-         !gnb_utc_frame_valid(inet_payload, (size_t)n_recv) ) {
+    if ( n_recv <= 0 ) {
         goto finish;
     }
+    
     if ( 1 == gnb_core->conf->if_dump ) {
         GNB_LOG3(gnb_core->log, GNB_LOG_ID_CORE, "Payload INET in buffer[%s..]\n",
                  gnb_get_hex_string256((void *)inet_payload,gnb_hex256_str1)
         );
     }
     node_addr_st.protocol = SOCK_DGRAM;
-    payload_size = gnb_payload16_size(inet_payload);
-    if ( payload_size != n_recv ) {
+    payload_size = GNB_PAYLOAD16_FRAME_SIZE(inet_payload);
+    if ( payload_size != n_recv || payload_size < GNB_PAYLOAD16_HEAD_SIZE ) {
         GNB_LOG3(gnb_core->log, GNB_LOG_ID_MAIN_WORKER, "handle_udp n_recv=%lu payload_size=%u payload invalid!\n", n_recv, payload_size);
         goto finish;
     }
@@ -541,7 +571,7 @@ static ssize_t handle_tun(gnb_core_t *gnb_core, gnb_pf_core_t *pf_core) {
     gnb_worker_queue_data_t *send_queue_data;
     char gnb_hex256_str1[256+1];
     //tun模式下这里得到的payload是ip分组, tap模式下是以太网分组,现在都是tun模式
-    rlen = gnb_core->drv->read_tun(gnb_core, gnb_core->tun_payload->data + gnb_core->tun_payload_offset, gnb_core->conf->payload_block_size);
+    rlen = gnb_core->drv->read_tun(gnb_core, gnb_core->tun_payload->data + gnb_core->tun_payload_offset, gnb_core->conf->payload_in_block_size);
     if ( rlen<=0 ) {
         goto finish;
     }
@@ -580,7 +610,7 @@ static void* tun_loop_thread_func( void *data ) {
     gnb_worker->thread_worker_run_flag = 1;
     primary_worker_ctx->tun_loop_thread_flag = 1;
     do {
-        rlen = gnb_core->drv->read_tun(gnb_core, gnb_core->tun_payload->data + gnb_core->tun_payload_offset, gnb_core->conf->payload_block_size);
+        rlen = gnb_core->drv->read_tun(gnb_core, gnb_core->tun_payload->data + gnb_core->tun_payload_offset, gnb_core->conf->payload_in_block_size);
         if ( rlen<=0 ) {
             continue;
         }
@@ -722,7 +752,6 @@ static void* tun_udp_loop_thread_func(void *data) {
     GNB_LOG1(gnb_core->log, GNB_LOG_ID_MAIN_WORKER, "start %s success!\n", gnb_worker->name);
 
     do {
-        if (gnb_core->utc_service) gnb_utc_service_poll(gnb_core->utc_service);
         readfds = allset;
         timeout.tv_sec  = 1l;
         timeout.tv_usec = 10000l;

@@ -30,6 +30,9 @@
 #include "gnb_address.h"
 #include "gnb_arg_list.h"
 #include "gnb_conf_file.h"
+#include "gnb_index_frame_type.h"
+#include "gnb_pingpong_frame_type.h"
+
 #include "gnb_log.h"
 
 #ifdef _WIN32
@@ -53,7 +56,9 @@ void signal_alrm_handler(int signum) {
 void signal_handler(int signum) {
     #ifdef __UNIX_LIKE_OS__
     if ( SIGHUP == signum ) {
-		gnb_core->ctl_block->core_zone->gnb_core_flag = GNB_CORE_FLAG_RESTART;
+        if ( GNB_CORE_FLAG_START == gnb_core->ctl_block->core_zone->gnb_core_flag ) {
+            gnb_core->ctl_block->core_zone->gnb_core_flag = GNB_CORE_FLAG_RESTART;
+        }
         return;
     }
     #endif
@@ -126,14 +131,24 @@ static void self_test() {
 	GNB_LOG1(gnb_core->log, GNB_LOG_ID_CORE, "SELF-TEST [%p] core_zone->inet_payload_block\n", ctl_block->core_zone->inet_payload_block);
 	GNB_LOG1(gnb_core->log, GNB_LOG_ID_CORE, "SELF-TEST [%p] core_zone->pf_worker_payload_blocks\n", ctl_block->core_zone->pf_worker_payload_blocks);
 
+    #if 0
 	GNB_LOG1(gnb_core->log, GNB_LOG_ID_CORE, "SELF-TEST heap:fragment_nums=%lu\n", gnb_core->heap->fragment_nums);
 	for ( i=0; i < gnb_core->heap->fragment_nums; i++ ) {
 		GNB_LOG1(gnb_core->log, GNB_LOG_ID_CORE, "SELF-TEST heap:fragment[%p]\n", gnb_core->heap->fragment_list[i]);
 	}
+    #endif
 
     GNB_LOG1(gnb_core->log, GNB_LOG_ID_CORE, "SELF-TEST route_frame_head_size=%lu\n", gnb_core->route_frame_head_size);
     GNB_LOG1(gnb_core->log, GNB_LOG_ID_CORE, "SELF-TEST mtu=%d\n", gnb_core->conf->mtu);
 
+    GNB_LOG1(gnb_core->log, GNB_LOG_ID_CORE, "SELF-TEST POST_ADDR_FRAME_PAYLOAD_SIZE=%lu\n", POST_ADDR_FRAME_PAYLOAD_SIZE);
+    GNB_LOG1(gnb_core->log, GNB_LOG_ID_CORE, "SELF-TEST ECHO_ADDR_FRAME_PAYLOAD_SIZE=%lu\n", ECHO_ADDR_FRAME_PAYLOAD_SIZE);
+    GNB_LOG1(gnb_core->log, GNB_LOG_ID_CORE, "SELF-TEST REQUEST_ADDR_FRAME_PAYLOAD_SIZE=%lu\n", REQUEST_ADDR_FRAME_PAYLOAD_SIZE);
+    GNB_LOG1(gnb_core->log, GNB_LOG_ID_CORE, "SELF-TEST PUSH_ADDR_FRAME_PAYLOAD_SIZE=%lu\n", PUSH_ADDR_FRAME_PAYLOAD_SIZE);
+    GNB_LOG1(gnb_core->log, GNB_LOG_ID_CORE, "SELF-TEST DETECT_ADDR_FRAME_PAYLOAD_SIZE=%lu\n", DETECT_ADDR_FRAME_PAYLOAD_SIZE);
+    GNB_LOG1(gnb_core->log, GNB_LOG_ID_CORE, "SELF-TEST NODE_PING_FRAME_PAYLOAD_SIZE=%lu\n", NODE_PING_FRAME_PAYLOAD_SIZE);
+    GNB_LOG1(gnb_core->log, GNB_LOG_ID_CORE, "SELF-TEST NODE_PONG_FRAME_PAYLOAD_SIZE=%lu\n", NODE_PONG_FRAME_PAYLOAD_SIZE);
+    
     GNB_LOG1(gnb_core->log, GNB_LOG_ID_CORE, "SELF-TEST daemon='%d'\n", gnb_core->conf->daemon );
     GNB_LOG1(gnb_core->log, GNB_LOG_ID_CORE, "SELF-TEST systemd_daemon='%d'\n", gnb_core->conf->systemd_daemon );
 
@@ -290,6 +305,248 @@ static void self_test() {
     }
 }
 
+void setup_log_ctx(gnb_conf_t *conf, gnb_log_ctx_t *log) {
+    int rc;
+    int pid;
+    log->output_type = GNB_LOG_OUTPUT_STDOUT;
+    if ( 0!=conf->daemon || 0!=conf->quiet ) {
+        log->output_type = GNB_LOG_OUTPUT_NONE;
+    }
+    if ( '\0' != conf->log_path[0] ) {
+        snprintf(log->log_file_path, PATH_MAX, "%s", conf->log_path);
+        if ( 0 == conf->public_index_service ) {
+            snprintf(log->log_file_name_std,   PATH_MAX+NAME_MAX, "%s/std.log",   conf->log_path);
+            snprintf(log->log_file_name_debug, PATH_MAX+NAME_MAX, "%s/debug.log", conf->log_path);
+            snprintf(log->log_file_name_error, PATH_MAX+NAME_MAX, "%s/error.log", conf->log_path);
+        } else {
+            snprintf(log->log_file_name_std,   PATH_MAX+NAME_MAX, "%s/std.%d.log",   conf->log_path, conf->udp4_ports[0]);
+            snprintf(log->log_file_name_debug, PATH_MAX+NAME_MAX, "%s/debug.%d.log", conf->log_path, conf->udp4_ports[0]);
+            snprintf(log->log_file_name_error, PATH_MAX+NAME_MAX, "%s/error.%d.log", conf->log_path, conf->udp4_ports[0]);
+        }
+        log->output_type |= GNB_LOG_OUTPUT_FILE;
+    } else {
+        log->log_file_path[0] = '\0';
+        //snprintf(log->log_file_path, PATH_MAX, "%s", "/tmp");
+        snprintf(log->log_file_name_std,   PATH_MAX+NAME_MAX, "%s", "/tmp/std.log");
+        snprintf(log->log_file_name_debug, PATH_MAX+NAME_MAX, "%s", "/tmp/debug.log");
+        snprintf(log->log_file_name_error, PATH_MAX+NAME_MAX, "%s", "/tmp/error.log");
+    }
+    if ( GNB_LOG_LEVEL_UNSET == conf->console_log_level ) {
+        if ( 0 == conf->lite_mode ) {
+            conf->console_log_level = GNB_LOG_LEVEL1;
+        } else {
+            conf->console_log_level = GNB_LOG_LEVEL3;
+        }
+    }
+    if ( GNB_LOG_LEVEL_UNSET == conf->file_log_level ) {
+        if ( 0 == conf->lite_mode ) {
+            conf->file_log_level    = GNB_LOG_LEVEL1;
+        } else {
+            conf->file_log_level    = GNB_LOG_LEVEL3;
+        }
+    }
+    if ( GNB_LOG_LEVEL_UNSET == conf->udp_log_level ) {
+        if ( 0 == conf->lite_mode ) {
+            conf->udp_log_level     = GNB_LOG_LEVEL1;
+        } else {
+            conf->udp_log_level     = GNB_LOG_LEVEL3;
+        }
+    }
+    if ( 1 == conf->lite_mode ) {
+        if ( GNB_LOG_LEVEL_UNSET == conf->core_log_level ) {
+            conf->core_log_level = GNB_LOG_LEVEL3;
+        }
+        if ( GNB_LOG_LEVEL_UNSET == conf->pf_log_level ) {
+            conf->pf_log_level = GNB_LOG_LEVEL3;
+        }
+        if ( GNB_LOG_LEVEL_UNSET == conf->core_log_level ) {
+            conf->core_log_level = GNB_LOG_LEVEL3;
+        }
+        if ( GNB_LOG_LEVEL_UNSET == conf->main_log_level ) {
+            conf->main_log_level = GNB_LOG_LEVEL3;
+        }
+        if ( GNB_LOG_LEVEL_UNSET == conf->node_log_level ) {
+            conf->node_log_level = GNB_LOG_LEVEL3;
+        }
+        if ( GNB_LOG_LEVEL_UNSET == conf->index_log_level ) {
+            conf->index_log_level = GNB_LOG_LEVEL3;
+        }
+        if ( GNB_LOG_LEVEL_UNSET == conf->index_service_log_level ) {
+            conf->index_service_log_level = GNB_LOG_LEVEL3;
+        }
+    }
+
+    snprintf(log->config_table[GNB_LOG_ID_CORE].log_name, 20, "CORE");
+    log->config_table[GNB_LOG_ID_CORE].console_level          = GNB_LOG_LEVEL1;
+    log->config_table[GNB_LOG_ID_CORE].file_level             = GNB_LOG_LEVEL1;
+    log->config_table[GNB_LOG_ID_CORE].udp_level              = GNB_LOG_LEVEL1;
+
+    snprintf(log->config_table[GNB_LOG_ID_PF].log_name, 20,   "PF");
+    log->config_table[GNB_LOG_ID_PF].console_level            = GNB_LOG_LEVEL1;
+    log->config_table[GNB_LOG_ID_PF].file_level               = GNB_LOG_LEVEL1;
+    log->config_table[GNB_LOG_ID_PF].udp_level                = GNB_LOG_LEVEL1;
+
+    snprintf(log->config_table[GNB_LOG_ID_MAIN_WORKER].log_name, 20, "MAIN");
+    log->config_table[GNB_LOG_ID_MAIN_WORKER].console_level   = GNB_LOG_LEVEL1;
+    log->config_table[GNB_LOG_ID_MAIN_WORKER].file_level      = GNB_LOG_LEVEL1;
+    log->config_table[GNB_LOG_ID_MAIN_WORKER].udp_level       = GNB_LOG_LEVEL1;
+
+    snprintf(log->config_table[GNB_LOG_ID_NODE_WORKER].log_name, 20, "NODE");
+    log->config_table[GNB_LOG_ID_NODE_WORKER].console_level   = GNB_LOG_LEVEL1;
+    log->config_table[GNB_LOG_ID_NODE_WORKER].file_level      = GNB_LOG_LEVEL1;
+    log->config_table[GNB_LOG_ID_NODE_WORKER].udp_level       = GNB_LOG_LEVEL1;
+
+    snprintf(log->config_table[GNB_LOG_ID_INDEX_WORKER].log_name, 20, "INDEX");
+    log->config_table[GNB_LOG_ID_INDEX_WORKER].console_level  = GNB_LOG_LEVEL1;
+    log->config_table[GNB_LOG_ID_INDEX_WORKER].file_level     = GNB_LOG_LEVEL1;
+    log->config_table[GNB_LOG_ID_INDEX_WORKER].udp_level      = GNB_LOG_LEVEL1;
+
+    snprintf(log->config_table[GNB_LOG_ID_INDEX_SERVICE_WORKER].log_name, 20, "INDEX_SERVICE");
+    log->config_table[GNB_LOG_ID_INDEX_SERVICE_WORKER].console_level  = GNB_LOG_LEVEL1;
+    log->config_table[GNB_LOG_ID_INDEX_SERVICE_WORKER].file_level     = GNB_LOG_LEVEL1;
+    log->config_table[GNB_LOG_ID_INDEX_SERVICE_WORKER].udp_level      = GNB_LOG_LEVEL1;
+
+    snprintf(log->config_table[GNB_LOG_ID_DETECT_WORKER].log_name, 20, "FULL_DETECT");
+    log->config_table[GNB_LOG_ID_DETECT_WORKER].console_level = GNB_LOG_LEVEL1;
+    log->config_table[GNB_LOG_ID_DETECT_WORKER].file_level    = GNB_LOG_LEVEL1;
+    log->config_table[GNB_LOG_ID_DETECT_WORKER].udp_level     = GNB_LOG_LEVEL1;
+
+    if ( GNB_LOG_LEVEL_UNSET != conf->core_log_level ) {
+        if ( 0 == conf->lite_mode ) {
+            if ( conf->console_log_level >= conf->core_log_level ) {
+                log->config_table[GNB_LOG_ID_CORE].console_level = conf->core_log_level;
+            }
+            if ( conf->file_log_level >= conf->core_log_level ) {
+                log->config_table[GNB_LOG_ID_CORE].file_level = conf->core_log_level;
+            }
+            if ( conf->udp_log_level >= conf->core_log_level ) {
+                log->config_table[GNB_LOG_ID_CORE].udp_level = conf->core_log_level;
+            }
+        } else {
+            log->config_table[GNB_LOG_ID_CORE].console_level = GNB_LOG_LEVEL3;
+            log->config_table[GNB_LOG_ID_CORE].file_level    = GNB_LOG_LEVEL3;
+            log->config_table[GNB_LOG_ID_CORE].udp_level     = GNB_LOG_LEVEL3;
+        }
+    }
+
+    if ( GNB_LOG_LEVEL_UNSET != conf->pf_log_level ) {
+        if ( 0 == conf->lite_mode ) {
+            if ( conf->pf_log_level >= log->config_table[GNB_LOG_ID_PF].console_level ) {
+                log->config_table[GNB_LOG_ID_PF].console_level = conf->pf_log_level;
+            }
+            if ( conf->pf_log_level >= log->config_table[GNB_LOG_ID_PF].file_level ) {
+                log->config_table[GNB_LOG_ID_PF].file_level = conf->pf_log_level;
+            }
+            if ( conf->pf_log_level >= log->config_table[GNB_LOG_ID_PF].udp_level ) {
+                log->config_table[GNB_LOG_ID_PF].udp_level = conf->pf_log_level;
+            }
+        } else {
+            log->config_table[GNB_LOG_ID_PF].console_level = GNB_LOG_LEVEL3;
+            log->config_table[GNB_LOG_ID_PF].file_level    = GNB_LOG_LEVEL3;
+            log->config_table[GNB_LOG_ID_PF].udp_level     = GNB_LOG_LEVEL3;
+        }
+    }
+
+    if ( GNB_LOG_LEVEL_UNSET != conf->main_log_level ) {
+        if ( 0 == conf->lite_mode ) {
+            if ( conf->console_log_level >= conf->main_log_level ) {
+                log->config_table[GNB_LOG_ID_MAIN_WORKER].console_level = conf->main_log_level;
+            }
+            if ( conf->file_log_level >= conf->main_log_level ) {
+                log->config_table[GNB_LOG_ID_MAIN_WORKER].file_level = conf->main_log_level;
+            }
+            if ( conf->udp_log_level >= conf->main_log_level ) {
+                log->config_table[GNB_LOG_ID_MAIN_WORKER].udp_level = conf->main_log_level;
+            }
+        } else {
+            log->config_table[GNB_LOG_ID_MAIN_WORKER].console_level = GNB_LOG_LEVEL3;
+            log->config_table[GNB_LOG_ID_MAIN_WORKER].file_level    = GNB_LOG_LEVEL3;
+            log->config_table[GNB_LOG_ID_MAIN_WORKER].udp_level     = GNB_LOG_LEVEL3;
+        }
+    }
+
+    if ( GNB_LOG_LEVEL_UNSET != conf->node_log_level ) {
+        if ( 0 == conf->lite_mode ) {
+            if ( conf->console_log_level >= conf->node_log_level ) {
+                log->config_table[GNB_LOG_ID_NODE_WORKER].console_level = conf->node_log_level;
+            }
+            if ( conf->file_log_level >= conf->node_log_level ) {
+                log->config_table[GNB_LOG_ID_NODE_WORKER].file_level = conf->node_log_level;
+            }
+            if ( conf->udp_log_level >= conf->node_log_level ) {
+                log->config_table[GNB_LOG_ID_NODE_WORKER].udp_level = conf->node_log_level;
+            }
+        } else {
+            log->config_table[GNB_LOG_ID_NODE_WORKER].console_level = GNB_LOG_LEVEL3;
+            log->config_table[GNB_LOG_ID_NODE_WORKER].file_level    = GNB_LOG_LEVEL3;
+            log->config_table[GNB_LOG_ID_NODE_WORKER].udp_level     = GNB_LOG_LEVEL3;
+        }
+    }
+
+    if ( GNB_LOG_LEVEL_UNSET != conf->index_log_level ) {
+        if ( 0 == conf->lite_mode ) {
+            if ( conf->console_log_level >= conf->index_log_level ) {
+                log->config_table[GNB_LOG_ID_INDEX_WORKER].console_level = conf->index_log_level;
+            }
+            if ( conf->file_log_level >= conf->index_log_level ) {
+                log->config_table[GNB_LOG_ID_INDEX_WORKER].file_level = conf->index_log_level;
+            }
+            if ( conf->udp_log_level >= conf->index_log_level ) {
+                log->config_table[GNB_LOG_ID_INDEX_WORKER].udp_level = conf->index_log_level;
+            }
+        } else {
+            log->config_table[GNB_LOG_ID_INDEX_WORKER].console_level = GNB_LOG_LEVEL3;
+            log->config_table[GNB_LOG_ID_INDEX_WORKER].file_level    = GNB_LOG_LEVEL3;
+            log->config_table[GNB_LOG_ID_INDEX_WORKER].udp_level     = GNB_LOG_LEVEL3;
+        }
+    }
+
+    if ( GNB_LOG_LEVEL_UNSET != conf->index_service_log_level ) {
+        if ( 0 == conf->lite_mode ) {
+            if ( conf->console_log_level >= conf->index_service_log_level ) {
+                log->config_table[GNB_LOG_ID_INDEX_SERVICE_WORKER].console_level = conf->index_service_log_level;
+            }
+            if ( conf->file_log_level >= conf->index_service_log_level ) {
+                log->config_table[GNB_LOG_ID_INDEX_SERVICE_WORKER].file_level = conf->index_service_log_level;
+            }
+            if ( conf->udp_log_level >= conf->index_service_log_level ) {
+                log->config_table[GNB_LOG_ID_INDEX_SERVICE_WORKER].udp_level = conf->index_service_log_level;
+            }
+        } else {
+            log->config_table[GNB_LOG_ID_INDEX_SERVICE_WORKER].console_level = GNB_LOG_LEVEL3;
+            log->config_table[GNB_LOG_ID_INDEX_SERVICE_WORKER].file_level    = GNB_LOG_LEVEL3;
+            log->config_table[GNB_LOG_ID_INDEX_SERVICE_WORKER].udp_level     = GNB_LOG_LEVEL3;
+        }
+    }
+
+    if ( GNB_LOG_LEVEL_UNSET != conf->detect_log_level ) {
+        if ( 0 == conf->lite_mode ) {
+            if ( conf->console_log_level >= conf->detect_log_level ) {
+                log->config_table[GNB_LOG_ID_DETECT_WORKER].console_level = conf->detect_log_level;
+            }
+            if ( conf->file_log_level >= conf->detect_log_level ) {
+                log->config_table[GNB_LOG_ID_DETECT_WORKER].file_level = conf->detect_log_level;
+            }
+            if ( conf->udp_log_level >= conf->detect_log_level ) {
+                log->config_table[GNB_LOG_ID_DETECT_WORKER].udp_level = conf->detect_log_level;
+            }
+        } else {
+            log->config_table[GNB_LOG_ID_DETECT_WORKER].console_level = GNB_LOG_LEVEL3;
+            log->config_table[GNB_LOG_ID_DETECT_WORKER].file_level    = GNB_LOG_LEVEL3;
+            log->config_table[GNB_LOG_ID_DETECT_WORKER].udp_level     = GNB_LOG_LEVEL3;
+        }
+    }
+
+   
+    log->log_udp_type = conf->log_udp_type;
+    log->log_payload_type = GNB_PAYLOAD_TYPE_UDPLOG;
+    if ( '\0' != conf->log_udp_sockaddress4_string[0] ) {
+        rc = gnb_log_udp_set_addr4_string(log, conf->log_udp_sockaddress4_string);
+        log->output_type |= GNB_LOG_OUTPUT_UDP;
+    }
+    return;
+}
+
 #ifdef _WIN32
 BOOL CALLBACK CosonleHandler(DWORD ev) {
     switch (ev) {
@@ -332,11 +589,6 @@ void show_description() {
     }
     printf("\n");
     printf("%s\n", GNB_BUILD_STRING);
-#ifdef __UNIX_LIKE_OS__
-    printf("Features: proxy utc-conf utc-conf-v1\n");
-#else
-    printf("Features: proxy\n");
-#endif
 }
 
 static void exec_loop_script(gnb_core_t *gnb_core, const char *script_file_name) {
@@ -366,13 +618,21 @@ void gnb_primary_process_loop( gnb_core_t *gnb_core ) {
             perror("gettimeofday");
             exit(1);
         }
-
-		//gnb_core->ctl_block->core_zone->log_trigger
-		
+        
+        if ( GNB_LOG_TRIGGER_UNSET != gnb_core->ctl_block->core_zone->log_trigger ) {
+            if ( GNB_LOG_TRIGGER_SETUP & gnb_core->ctl_block->core_zone->log_trigger ) {
+                setup_log_ctx(gnb_core->conf, gnb_core->log);
+            }
+            if ( GNB_LOG_TRIGGER_ROTATE & gnb_core->ctl_block->core_zone->log_trigger ) {
+                gnb_log_file_open_rotate(gnb_core->log, 1);
+            }
+            gnb_core->ctl_block->core_zone->log_trigger = GNB_LOG_TRIGGER_UNSET;
+        }
+        
         gnb_core->now_time_sec  = gnb_core->now_timeval.tv_sec;
         gnb_core->now_time_usec = gnb_core->now_timeval.tv_sec * 1000000 + gnb_core->now_timeval.tv_usec;
         gnb_core->ctl_block->status_zone->keep_alive_ts_sec = (uint64_t)gnb_core->now_timeval.tv_sec;
-		gnb_log_file_open_rotate(gnb_core->log);
+        gnb_log_file_open_rotate(gnb_core->log, 0);
         #ifdef __UNIX_LIKE_OS__
         sleep(1);
         #endif
@@ -479,10 +739,6 @@ primary_process_loop:
     // here begin hot restart gnb
 	//为了适配 Windows 平台共享内存的特性,创建新的共享内存块前必须把旧的 gnb core 停下来,重新映射共享内存块.
 	gnb_core_stop(gnb_core);
-    /* All workers are stopped. Release the instance writer before constructing
-     * the replacement core; its startup recovers constraints with a fresh boot. */
-    gnb_utc_detach(gnb_core, 1);
-
 	
 	//注意,至此进程只有当前这个线程在工作
 	// munmap 之后 gnb_core->conf 就无法使用了, 因此要把 gnb_core->conf.map_file 拷贝出来

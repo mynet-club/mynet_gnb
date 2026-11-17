@@ -836,10 +836,11 @@ void local_node_file_config(gnb_conf_t *conf) {
         conf->index_service_lru_size = 1024*2;
         break;
     }
+    conf->payload_in_block_size = conf->payload_block_size - GNB_PAYLOAD_SAFETY_MARGIN;
 }
 
 gnb_uint64_t gnb_get_node_num_from_file(gnb_conf_t *conf){
-    size_t n = 0;
+    gnb_uint64_t n = 0;
     FILE *file;
     gnb_uuid_t uuid64;
     char tun_ipv4_string[INET_ADDRSTRLEN+1];

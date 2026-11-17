@@ -63,7 +63,7 @@ typedef struct _gnb_conf_t {
     uint8_t restore;  //GNB_CORE_NEW:全新构建gnb_core,GNB_CORE_RESTORE:恢复旧gnb_core部分数据
     gnb_uuid_t local_uuid;
     char binary_dir[PATH_MAX];
-    char map_file[PATH_MAX+NAME_MAX];
+    char map_file[PATH_MAX+NAME_MAX-4];
     char pid_file[PATH_MAX+NAME_MAX];
     char node_cache_file[PATH_MAX+NAME_MAX];
 
@@ -105,7 +105,16 @@ typedef struct _gnb_conf_t {
     unsigned char memory;
 
     uint32_t index_service_lru_size;
+    
+
     uint32_t payload_block_size;
+    /* 为读缓冲区留出的余量
+      payload_in_block_size 将是 (payload_block_size-GNB_PAYLOAD_SAFETY_MARGIN)
+      此数值提前设好,避免每次将数据读入缓冲区时做一次减法运算
+    */
+    #define GNB_PAYLOAD_SAFETY_MARGIN 128
+    uint32_t payload_in_block_size;
+    
     uint32_t max_heap_fragment;
 
     unsigned char multi_index_type;

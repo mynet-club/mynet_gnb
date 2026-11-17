@@ -276,31 +276,39 @@ void gnb_log_ctx_init(gnb_log_ctx_t *log) {
     log->socket4_fd    = -1;
 }
 
-int gnb_log_file_open_rotate(gnb_log_ctx_t *log) {
+int gnb_log_file_open_rotate(gnb_log_ctx_t *log, int force) {
     char now_time_string[GNB_TIME_STRING_MAX];
     char archive_name[PATH_MAX+NAME_MAX];
-    int mday = gnb_now_mday();
-    if (mday == log->pre_mday) {
-        close_log_file_pre_fd(log);
-        return 0;
-    }
+
     if ( !(log->output_type & GNB_LOG_OUTPUT_FILE) ) {
         return 1;
     }
+
+    int mday = gnb_now_mday();
+    if ( !force && mday == log->pre_mday ) {
+        close_log_file_pre_fd(log);
+        return 0;
+    }
+
     log->pre_mday = mday;
-    gnb_now_timef("%Y_%m_%d_%H.%M.%S",now_time_string,GNB_TIME_STRING_MAX);
-	//方便用 *.arc.log 清理日志
-    snprintf(archive_name, PATH_MAX+NAME_MAX, "%s/std_%s.arc.log", log->log_file_path, now_time_string);
-    rename( (const char *)log->log_file_name_std, (const char *)archive_name );
+    close_log_file_pre_fd(log);
 
-    log->pre_std_fd    = log->std_fd;
-    log->pre_debug_fd  = log->debug_fd;
-    snprintf(archive_name, PATH_MAX+NAME_MAX, "%s/debug_%s.arc.log", log->log_file_path, now_time_string);
-    rename( (const char *)log->log_file_name_debug, (const char *)archive_name );
+    if ( log->std_fd > 0 || log->debug_fd > 0 || log->error_fd > 0 ) {
+        gnb_now_timef("%Y_%m_%d_%H.%M.%S", now_time_string, GNB_TIME_STRING_MAX);
 
-    log->pre_error_fd  = log->error_fd;
-    snprintf(archive_name, PATH_MAX+NAME_MAX, "%s/error_%s.arc.log", log->log_file_path, now_time_string);
-    rename( (const char *)log->log_file_name_error, (const char *)archive_name );
+        snprintf(archive_name, PATH_MAX+NAME_MAX, "%s/std_%s.arc.log", log->log_file_path, now_time_string);
+        rename((const char *)log->log_file_name_std, (const char *)archive_name);
+        log->pre_std_fd = log->std_fd;
+
+        snprintf(archive_name, PATH_MAX+NAME_MAX, "%s/debug_%s.arc.log", log->log_file_path, now_time_string);
+        rename((const char *)log->log_file_name_debug, (const char *)archive_name);
+        log->pre_debug_fd = log->debug_fd;
+
+        snprintf(archive_name, PATH_MAX+NAME_MAX, "%s/error_%s.arc.log", log->log_file_path, now_time_string);
+        rename((const char *)log->log_file_name_error, (const char *)archive_name);
+        log->pre_error_fd = log->error_fd;
+    }
+
     open_log_file(log);
     return 0;
 }

@@ -69,7 +69,7 @@ typedef struct _post_addr_frame_t {
     unsigned char src_sign[ED25519_SIGN_SIZE];
     gnb_uuid_t  node_uuid64;
 }__attribute__ ((__packed__)) post_addr_frame_t;
-
+#define POST_ADDR_FRAME_PAYLOAD_SIZE    (sizeof(gnb_payload16_t) + sizeof(post_addr_frame_t))
 
 //index to node
 typedef struct _echo_addr_frame_t {
@@ -89,6 +89,7 @@ typedef struct _echo_addr_frame_t {
     unsigned char src_sign[ED25519_SIGN_SIZE];
     gnb_uuid_t  index_node_uuid64;
 }__attribute__ ((__packed__)) echo_addr_frame_t;
+#define ECHO_ADDR_FRAME_PAYLOAD_SIZE    (sizeof(gnb_payload16_t) + sizeof(echo_addr_frame_t))
 
 //node to index
 typedef struct _request_addr_frame_t {
@@ -101,14 +102,15 @@ typedef struct _request_addr_frame_t {
         unsigned char arg3;               //保留
         unsigned char src_key512[64];     //发送节点的key
         unsigned char dst_key512[64];     //被查询节点的key
-        gnb_uuid_t src_uuid64;              //发送方的uuid64,可选
-        gnb_uuid_t dst_uuid64;              //被查询节点的uuid可选
+        gnb_uuid_t src_uuid64;            //发送方的uuid64,可选
+        gnb_uuid_t dst_uuid64;            //被查询节点的uuid可选
         uint64_t src_ts_usec;
         char text[32];
     } data;
     unsigned char src_sign[ED25519_SIGN_SIZE];
     gnb_uuid_t  node_uuid64;
 }__attribute__ ((__packed__)) request_addr_frame_t;
+#define REQUEST_ADDR_FRAME_PAYLOAD_SIZE    (sizeof(gnb_payload16_t) + sizeof(request_addr_frame_t))
 
 //index to node
 typedef struct _push_addr_frame_t {
@@ -143,7 +145,6 @@ typedef struct _push_addr_frame_t {
     gnb_uuid_t  index_node_uuid64;
     unsigned char src_sign[ED25519_SIGN_SIZE];
 }__attribute__ ((__packed__)) push_addr_frame_t;
-
 #define PUSH_ADDR_FRAME_PAYLOAD_SIZE    (sizeof(gnb_payload16_t) + sizeof(push_addr_frame_t))
 
 typedef struct _detect_addr_frame_t {
@@ -162,6 +163,7 @@ typedef struct _detect_addr_frame_t {
     unsigned char src_sign[ED25519_SIGN_SIZE];
     gnb_uuid_t  node_uuid64;
 }__attribute__ ((__packed__)) detect_addr_frame_t;
+#define DETECT_ADDR_FRAME_PAYLOAD_SIZE    (sizeof(gnb_payload16_t) + sizeof(detect_addr_frame_t))
 
 #pragma pack(pop)
 

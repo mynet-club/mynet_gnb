@@ -62,8 +62,9 @@ typedef struct _gnb_ctl_core_zone_t {
 	#define GNB_CORE_FLAG_STOP     4
 	volatile uint32_t gnb_core_flag;
 
-	#define GNB_LOG_TRIGGER_SETUP  1
-	#define GNB_LOG_TRIGGER_ROTATE 2
+    #define GNB_LOG_TRIGGER_UNSET  (0x0)
+	#define GNB_LOG_TRIGGER_SETUP  (0x1)
+	#define GNB_LOG_TRIGGER_ROTATE (0x1 << 1)
 	volatile uint32_t log_trigger;
 
     unsigned char ed25519_private_key[64];

@@ -22,7 +22,7 @@
 #include "gnb_log_type.h"
 
 void gnb_log_ctx_init(gnb_log_ctx_t *log);
-int gnb_log_file_open_rotate(gnb_log_ctx_t *log);
+int gnb_log_file_open_rotate(gnb_log_ctx_t *log, int force);
 int gnb_log_udp_set_addr4(gnb_log_ctx_t *log, char *ip, uint16_t port4);
 int gnb_log_udp_set_addr6(gnb_log_ctx_t *log, char *ip, uint16_t port6);
 int gnb_log_udp_set_addr4_string(gnb_log_ctx_t *log, char *sockaddress4_string);

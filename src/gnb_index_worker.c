@@ -32,7 +32,6 @@
 #include <unistd.h>
 
 #include "gnb.h"
-#include "gnb_utc.h"
 #include "gnb_node.h"
 #include "gnb_worker.h"
 #include "gnb_ring_buffer_fixed.h"
@@ -138,7 +137,6 @@ static void send_detect_addr_frame(gnb_worker_t *gnb_index_worker, gnb_address_t
     memcpy(&address_st,in_address,sizeof(gnb_address_t));
     index_worker_ctx_t *index_worker_ctx = gnb_index_worker->ctx;
     gnb_core_t *gnb_core = index_worker_ctx->gnb_core;
-    if (gnb_utc_action(gnb_core, dst_uuid64) != GNB_UTC_NATIVE) return;
     index_worker_ctx->index_frame_payload->sub_type = PAYLOAD_SUB_TYPE_DETECT_ADDR;
     gnb_payload16_set_data_len( index_worker_ctx->index_frame_payload,  sizeof(detect_addr_frame_t) );
     detect_addr_frame_t *detect_addr_frame = (detect_addr_frame_t *)index_worker_ctx->index_frame_payload->data;
@@ -194,7 +192,6 @@ static void send_detect_addr_frame_arg(gnb_worker_t *gnb_index_worker, gnb_addre
     memcpy(&address_st,in_address,sizeof(gnb_address_t));
     index_worker_ctx_t *index_worker_ctx = gnb_index_worker->ctx;
     gnb_core_t *gnb_core = index_worker_ctx->gnb_core;
-    if (gnb_utc_action(gnb_core, dst_uuid64) != GNB_UTC_NATIVE) return;
     index_worker_ctx->index_frame_payload->sub_type = PAYLOAD_SUB_TYPE_DETECT_ADDR;
     gnb_payload16_set_data_len( index_worker_ctx->index_frame_payload,  sizeof(detect_addr_frame_t) );
     detect_addr_frame_t *detect_addr_frame = (detect_addr_frame_t *)index_worker_ctx->index_frame_payload->data;
@@ -237,8 +234,10 @@ static void detect_node_addr(gnb_worker_t *gnb_index_worker, gnb_node_t *node) {
     node->detect_count++;
 }
 
-
 static void handle_push_addr_frame(gnb_core_t *gnb_core, gnb_worker_in_data_t *index_worker_in_data) {
+    if ( GNB_PAYLOAD16_DATA_SIZE(&index_worker_in_data->payload_st) < sizeof(push_addr_frame_t) ) {
+        return;
+    }
     gnb_address_list_t *push_address_list;
     gnb_address_list_t *detect_address_list;
     index_worker_ctx_t *index_worker_ctx = gnb_core->index_worker->ctx;
@@ -398,6 +397,9 @@ static void sync_index_node(gnb_worker_t *gnb_index_worker) {
 }
 
 static void handle_echo_addr_frame(gnb_core_t *gnb_core, gnb_worker_in_data_t *index_worker_in_data) {
+    if ( GNB_PAYLOAD16_DATA_SIZE(&index_worker_in_data->payload_st) < sizeof(echo_addr_frame_t) ) {
+        return;
+    }
     index_worker_ctx_t *index_worker_ctx = gnb_core->index_worker->ctx;
     gnb_sockaddress_t *sockaddress = &index_worker_in_data->node_addr_st;
     echo_addr_frame_t *echo_addr_frame = (echo_addr_frame_t *)&index_worker_in_data->payload_st.data;
@@ -453,11 +455,13 @@ static void handle_echo_addr_frame(gnb_core_t *gnb_core, gnb_worker_in_data_t *i
 }
 
 static void handle_detect_addr_frame(gnb_core_t *gnb_core, gnb_worker_in_data_t *index_worker_in_data) {
+    if ( GNB_PAYLOAD16_DATA_SIZE(&index_worker_in_data->payload_st) < sizeof(detect_addr_frame_t) ) {
+        return;
+    }
     gnb_address_list_t *dynamic_address_list;
     index_worker_ctx_t *index_worker_ctx = gnb_core->index_worker->ctx;
     detect_addr_frame_t *detect_addr_frame = (detect_addr_frame_t *)&index_worker_in_data->payload_st.data;
     gnb_uuid_t src_uuid64 = gnb_ntohll(detect_addr_frame->data.src_uuid64);
-    if (gnb_utc_action(gnb_core, src_uuid64) != GNB_UTC_NATIVE) return;
     gnb_uuid_t dst_uuid64 = gnb_ntohll(detect_addr_frame->data.dst_uuid64);
     gnb_sockaddress_t *sockaddress = &index_worker_in_data->node_addr_st;
     gnb_node_t *src_node;
