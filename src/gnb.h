@@ -51,7 +51,12 @@
 #include "gnb_log.h"
 #include "gnb_version.h"
 
+#include "gnb_utc.h"
+#include "gnb_utc_service.h"
+
 typedef struct _gnb_core_t {
+    gnb_utc_service_t *utc_service;
+    gnb_utc_table_t *utc_policy; /* optional; attach before workers start */
     gnb_heap_t *heap;
     gnb_heap_t *heap_lru32;
     gnb_conf_t *conf;

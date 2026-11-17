@@ -43,6 +43,7 @@
 #include "gnb_time.h"
 #include "gnb_keys.h"
 #include "gnb_mmap.h"
+#include "gnb_proxy.h"
 #include "gnb_time.h"
 
 #ifdef __UNIX_LIKE_OS__
@@ -135,6 +136,9 @@ gnb_core_t* gnb_core_create(gnb_conf_t *conf) {
     gnb_heap_t *heap = gnb_heap_create(conf->max_heap_fragment);
     gnb_core = gnb_heap_alloc(heap, sizeof(gnb_core_t));
     memset(gnb_core, 0, sizeof(gnb_core_t));
+    if (gnb_utc_attach(gnb_core, conf)) {
+        gnb_heap_free(heap, gnb_core); gnb_heap_release(heap); return NULL;
+    }
     gnb_core->heap = heap;
     gnb_core->heap_lru32 = gnb_heap_create(conf->index_service_lru_size + 128);
     ctl_block_create(gnb_core, conf);
@@ -142,6 +146,8 @@ gnb_core_t* gnb_core_create(gnb_conf_t *conf) {
     memcpy(gnb_core->conf, conf, sizeof(gnb_conf_t));
     gnb_core->log = &gnb_core->ctl_block->core_zone->log_ctx_st;
     gnb_log_ctx_init(gnb_core->log);
+    /* 日志就绪后再载 proxy.conf，避免加载成功/失败日志被丢掉 */
+    gnb_proxy_cfg_load(gnb_core, gnb_core->conf->conf_dir);
     gnb_core->ed25519_private_key = gnb_core->ctl_block->core_zone->ed25519_private_key;
     gnb_core->ed25519_public_key  = gnb_core->ctl_block->core_zone->ed25519_public_key;
     gnb_core->index_address_ring.address_list = (gnb_address_list_t *)gnb_core->ctl_block->core_zone->index_address_block;
@@ -336,6 +342,7 @@ finish:
 }
 
 gnb_core_t* gnb_core_index_service_create(gnb_conf_t *conf) {
+    if (!gnb_utc_index_allowed()) return NULL;
     gnb_core_t *gnb_core;
     gnb_heap_t *heap = gnb_heap_create(conf->max_heap_fragment);
     gnb_core = gnb_heap_alloc(heap, sizeof(gnb_core_t));
@@ -461,6 +468,7 @@ PUBLIC_INDEX_RELEASE:
 	gnb_log_udp_close(gnb_core->log);
 	gnb_log_close(gnb_core->log);
 
+    gnb_utc_detach(gnb_core, 0);
     ctl_block_release(gnb_core);
     gnb_heap_free(gnb_core->heap, gnb_core);
     gnb_heap_release(heap);

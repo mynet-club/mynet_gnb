@@ -16,9 +16,11 @@
 */
 
 #include "gnb.h"
+#include "gnb_utc.h"
 #include "gnb_pf.h"
 #include "gnb_node.h"
 #include "gnb_payload16.h"
+#include "gnb_proxy.h"
 #include "protocol/network_protocol.h"
 
 #define GNB_PAYLOAD_MAX_TTL     0x05
@@ -26,16 +28,7 @@ typedef struct _gnb_route_ctx_t {
     void *udata;
 } gnb_route_ctx_t;
 
-#pragma pack(push, 1)
-typedef struct _gnb_route_frame_head_t {
-    unsigned char magic[2];
-    unsigned char pf_type_bits; //用于加密,压缩标识
-    uint8_t ttl;
-    gnb_uuid_t src_uuid64;
-    gnb_uuid_t dst_uuid64;
-    unsigned char verifycode[4]; // 用于校验解密是否成功,暂未使用
-} __attribute__ ((__packed__)) gnb_route_frame_head_t;
-#pragma pack(pop)
+#include "gnb_route_frame.h"
 
 #define MIN_ROUTE_FRAME_SIZE ( sizeof(gnb_route_frame_head_t) + sizeof(struct iphdr) )
 
@@ -57,6 +50,7 @@ static void pf_conf_cb(gnb_core_t *gnb_core, gnb_pf_t *pf) {
  * 创建 route_frame ，填充 ip_frame, 得到dst_node
 */
 static int pf_tun_frame_cb(gnb_core_t *gnb_core, gnb_pf_t *pf, gnb_pf_ctx_t *pf_ctx) {
+    gnb_proxy_cfg_reload_if_changed(gnb_core);
     if ( NULL==pf_ctx->fwd_payload ) {
         return GNB_PF_ERROR;
     }
@@ -95,6 +89,42 @@ handle_ip_frame:
         }
         if ( is_same_subnet ) {
             pf_ctx->dst_node = gnb_core->select_fwd_node;
+        }
+    }
+
+    // proxy.conf：route.conf 未命中时，按 group 的 target 选出口节点（下一跳）
+    // server 只放行不选路，避免组播/广播误走 pick 路径
+    if ( NULL == pf_ctx->dst_node && gnb_proxy_is_client() ) {
+        char dst_ip_string[INET6_ADDRSTRLEN];
+        if ( 0x6 == ip_frame_head->version ) {
+            inet_ntop(AF_INET6, &ip6_frame_head->ip6_dst, dst_ip_string, sizeof(dst_ip_string));
+        } else {
+            inet_ntop(AF_INET, &dst_ip_int, dst_ip_string, sizeof(dst_ip_string));
+        }
+        uint32_t src_ip = 0;
+        uint8_t proto = 0;
+        uint16_t src_port = 0, dst_port = 0;
+        uint16_t ip_id = 0;
+        int is_fragment = 0;
+        if (0x4 == ip_frame_head->version) {
+            src_ip = *((uint32_t *)&ip_frame_head->saddr);
+            proto = ip_frame_head->protocol;
+            ip_id = ntohs(ip_frame_head->id);
+            /* off: flags(3bit) + frag_offset(13bit)；MF 或 offset!=0 即分片 */
+            is_fragment = (ntohs(ip_frame_head->off) & 0x3fff) != 0;
+            if ((proto == IPPROTO_TCP || proto == IPPROTO_UDP) &&
+                pf_ctx->ip_frame_size >= (int)(sizeof(struct iphdr) + 4)) {
+                uint16_t *ports = (uint16_t *)((char *)ip_frame_head + (ip_frame_head->ihl * 4));
+                src_port = ntohs(ports[0]); dst_port = ntohs(ports[1]);
+            }
+        }
+        gnb_node_t *exit_node = gnb_proxy_pick_flow(gnb_core, src_ip, dst_ip_int,
+                                                    proto, src_port, dst_port, ip_id, is_fragment);
+        if ( NULL != exit_node ) {
+            pf_ctx->dst_node = exit_node;
+            GNB_LOG3(gnb_core->log, GNB_LOG_ID_PF, "pf_tun_frame_cb proxy on, no route for dst ip %s, use proxy exit node %llu\n", dst_ip_string, exit_node->uuid64);
+        } else {
+            GNB_LOG3(gnb_core->log, GNB_LOG_ID_PF, "pf_tun_frame_cb proxy on, no route for dst ip %s and no usable proxy exit\n", dst_ip_string);
         }
     }
 
@@ -144,6 +174,11 @@ static int pf_tun_route_cb(gnb_core_t *gnb_core, gnb_pf_t *pf, gnb_pf_ctx_t *pf_
     if ( NULL == pf_ctx->dst_node ) {
         ret = GNB_PF_DROP;
         goto finish;
+    }
+    if (gnb_utc_action(gnb_core, pf_ctx->dst_node->uuid64) != GNB_UTC_NATIVE) {
+        pf_ctx->fwd_node = pf_ctx->dst_node;
+        pf_ctx->direct_forwarding = 1;
+        goto finish; /* remaining pf_tun_route callbacks still encrypt */
     }
     if ( 0 == gnb_core->conf->direct_forwarding ) {
         if ( NULL != gnb_core->select_fwd_node ) {
@@ -315,10 +350,16 @@ static int pf_inet_frame_cb(gnb_core_t *gnb_core, gnb_pf_t *pf, gnb_pf_ctx_t *pf
     if ( !(GNB_PAYLOAD_SUB_TYPE_IPFRAME_RELAY & pf_ctx->fwd_payload->sub_type) ) {
         pf_ctx->ip_frame_size = gnb_payload16_data_len(pf_ctx->fwd_payload) - sizeof(gnb_route_frame_head_t);
     } else {
+        if (!pf_ctx->in_ttl || pf_ctx->in_ttl > GNB_MAX_NODE_RELAY ||
+            payload_data_size < sizeof(gnb_route_frame_head_t) + sizeof(struct iphdr) +
+                                pf_ctx->in_ttl * sizeof(gnb_uuid_t)) {
+            ret = GNB_PF_DROP;
+            goto finish;
+        }
         // 处理带有 GNB_PAYLOAD_SUB_TYPE_IPFRAME_RELAY 标志的 payload
         pf_ctx->ip_frame_size = gnb_payload16_data_len(pf_ctx->fwd_payload) - sizeof(gnb_route_frame_head_t) - pf_ctx->in_ttl*sizeof(gnb_uuid_t);
         relay_nodeid_ptr = pf_ctx->relay_nodeid_array;
-        memcpy((void *)relay_nodeid_ptr, pf_ctx->fwd_payload->data + sizeof(gnb_route_frame_head_t) + pf_ctx->ip_frame_size, sizeof(gnb_uuid_t) * GNB_MAX_NODE_RELAY);
+        memcpy((void *)relay_nodeid_ptr, pf_ctx->fwd_payload->data + sizeof(gnb_route_frame_head_t) + pf_ctx->ip_frame_size, sizeof(gnb_uuid_t) * pf_ctx->in_ttl);
         pf_ctx->src_fwd_uuid64 = gnb_ntohll(pf_ctx->relay_nodeid_array[ pf_ctx->in_ttl -1 ]);
     }
     ret = GNB_PF_NEXT;
@@ -453,6 +494,15 @@ static int pf_inet_fwd_cb(gnb_core_t *gnb_core, gnb_pf_t *pf, gnb_pf_ctx_t *pf_c
     if ( GNB_PF_FWD_TUN != pf_ctx->pf_fwd ) {
         return pf_ctx->pf_status;
     }
+
+    //proxy=1 时本节点不受 route.conf 转发白名单限制: 写入 tun 之前不再检查目的 ip 是否登记在 route.conf 中
+    if ( gnb_proxy_ingress_open() ) {
+        if ( 1==gnb_core->conf->if_dump ) {
+            GNB_LOG3(gnb_core->log, GNB_LOG_ID_PF, "pf_inet_fwd_cb proxy on, skip the forwarding whitelist of route.conf\n");
+        }
+        goto finish;
+    }
+
     struct iphdr   *ip_frame_head  = (struct iphdr  *)pf_ctx->ip_frame;
     struct ip6_hdr *ip6_frame_head = (struct ip6_hdr*)pf_ctx->ip_frame;
     uint32_t dst_ip_int;
